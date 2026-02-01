@@ -3,8 +3,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { motion } from 'framer-motion';
-import { Mail, Lock, Cloud } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Mail, Lock, Cloud, AlertCircle } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { AuthInput, AuthButton } from './AuthInput';
 import { SocialButtons } from './SocialButtons';
@@ -19,7 +19,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export function LoginForm() {
   const navigate = useNavigate();
-  const { login, isLoading } = useAuthStore();
+  const { login, isLoading, error, setError } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginFormData>({
@@ -30,8 +30,13 @@ export function LoginForm() {
   });
 
   const onSubmit = async (data: LoginFormData) => {
-    await login(data.email, data.password);
-    navigate('/dashboard');
+    try {
+      setError(null);
+      await login(data.email, data.password);
+      navigate('/dashboard');
+    } catch (err) {
+      // Error is already set in the store
+    }
   };
 
   const handleGoogleLogin = () => {
@@ -60,6 +65,21 @@ export function LoginForm() {
           Sign in to your HCloud account
         </p>
       </div>
+
+      {/* Error Alert */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/20 flex items-center gap-2 text-sm text-destructive"
+          >
+            <AlertCircle size={16} />
+            {error}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
         <motion.div
@@ -109,8 +129,8 @@ export function LoginForm() {
             />
             <span className="text-sm text-muted-foreground">Remember me</span>
           </label>
-          <Link 
-            to="/forgot-password" 
+          <Link
+            to="/forgot-password"
             className="text-sm text-primary hover:underline"
           >
             Forgot password?

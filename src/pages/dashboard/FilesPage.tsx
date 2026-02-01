@@ -1,28 +1,70 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, FolderPlus, Upload, Filter, ArrowUpDown } from 'lucide-react';
+import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { FileCard } from '@/components/file/FileCard';
 import { FileRow } from '@/components/file/FileRow';
 import { UploadZone } from '@/components/file/UploadZone';
 import { FolderBreadcrumb } from '@/components/file/FolderBreadcrumb';
+import { NewFolderDialog } from '@/components/file/NewFolderDialog';
+import { RenameDialog } from '@/components/file/RenameDialog';
+import { DeleteConfirmDialog } from '@/components/file/DeleteConfirmDialog';
+import { ShareDialog } from '@/components/file/ShareDialog';
+import { MoveDialog } from '@/components/file/MoveDialog';
+import { FileCardSkeleton } from '@/components/common/Skeleton';
+import { EmptyState } from '@/components/common/EmptyState';
+import { FileItem } from '@/services/fileService';
+import * as fileService from '@/services/fileService';
 
 export default function FilesPage() {
-  const { files, currentFolder, selectedFiles, selectFile, clearSelection, toggleStar, removeFile } = useFileStore();
+  const { user } = useAuthStore();
+  const {
+    files,
+    currentFolder,
+    currentFolderPath,
+    selectedFiles,
+    isLoading,
+    error,
+    loadFiles,
+    navigateToFolder,
+    selectFile,
+    clearSelection,
+    toggleStar,
+    deleteItem,
+    createFolder,
+    renameItem,
+    moveItem,
+    shareItem,
+  } = useFileStore();
   const { viewMode, searchQuery } = useUIStore();
+
   const [showUpload, setShowUpload] = useState(false);
+  const [showNewFolder, setShowNewFolder] = useState(false);
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('name');
 
-  // Filter files by current folder and search query
+  // Dialog states
+  const [renameFile, setRenameFile] = useState<FileItem | null>(null);
+  const [deleteFile, setDeleteFile] = useState<FileItem | null>(null);
+  const [shareFile, setShareFile] = useState<FileItem | null>(null);
+  const [moveFile, setMoveFile] = useState<FileItem | null>(null);
+
+  // Load files on mount and when folder changes
+  useEffect(() => {
+    if (user?.id) {
+      loadFiles(user.id, currentFolder);
+    }
+  }, [user?.id, currentFolder, loadFiles]);
+
+  // Filter files by search query
   const filteredFiles = files
-    .filter(f => f.parentId === currentFolder)
     .filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => {
       // Folders first
       if (a.type === 'folder' && b.type !== 'folder') return -1;
       if (a.type !== 'folder' && b.type === 'folder') return 1;
-      
+
       switch (sortBy) {
         case 'name':
           return a.name.localeCompare(b.name);
@@ -35,10 +77,96 @@ export default function FilesPage() {
       }
     });
 
-  const handleFilesSelected = (files: FileList) => {
-    console.log('Files selected:', files);
-    // Handle upload
+  const handleFilesSelected = async (fileList: FileList) => {
+    if (!user?.id) return;
+
+    // TODO: Implement Telegram upload
+    // For now, just log and close
+    console.log('Files to upload:', Array.from(fileList));
     setShowUpload(false);
+  };
+
+  const handleCreateFolder = async (name: string) => {
+    if (!user?.id) return;
+    try {
+      await createFolder(name, user.id);
+      setShowNewFolder(false);
+    } catch (err) {
+      console.error('Failed to create folder:', err);
+    }
+  };
+
+  const handleRename = async (newName: string) => {
+    if (!renameFile) return;
+    try {
+      await renameItem(renameFile.id, newName);
+      setRenameFile(null);
+    } catch (err) {
+      console.error('Failed to rename:', err);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteFile) return;
+    try {
+      await deleteItem(deleteFile.id);
+      setDeleteFile(null);
+    } catch (err) {
+      console.error('Failed to delete:', err);
+    }
+  };
+
+  const handleMove = async (targetFolderId: string | null) => {
+    if (!moveFile) return;
+    try {
+      await moveItem(moveFile.id, targetFolderId);
+      setMoveFile(null);
+    } catch (err) {
+      console.error('Failed to move:', err);
+    }
+  };
+
+  const handleShare = async (settings: { password?: string; expiresAt?: Date }) => {
+    if (!shareFile) return;
+    try {
+      await shareItem(shareFile.id, settings);
+      setShareFile(null);
+    } catch (err) {
+      console.error('Failed to share:', err);
+    }
+  };
+
+  const handleFileClick = (file: FileItem) => {
+    if (file.type === 'folder') {
+      navigateToFolder(file.id, file.name);
+    } else {
+      // Open file preview
+      selectFile(file.id);
+    }
+  };
+
+  const handleFileAction = (action: string, file: FileItem) => {
+    switch (action) {
+      case 'rename':
+        setRenameFile(file);
+        break;
+      case 'delete':
+        setDeleteFile(file);
+        break;
+      case 'share':
+        setShareFile(file);
+        break;
+      case 'move':
+        setMoveFile(file);
+        break;
+      case 'star':
+        toggleStar(file.id);
+        break;
+      case 'download':
+        // TODO: Implement download
+        console.log('Download:', file);
+        break;
+    }
   };
 
   return (
@@ -46,10 +174,15 @@ export default function FilesPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <FolderBreadcrumb items={[]} />
-          <h1 className="text-2xl font-bold text-foreground mt-2">My Files</h1>
+          <FolderBreadcrumb
+            items={currentFolderPath.map(p => ({ id: p.id, name: p.name }))}
+            onNavigate={(id) => navigateToFolder(id)}
+          />
+          <h1 className="text-2xl font-bold text-foreground mt-2">
+            {currentFolderPath[currentFolderPath.length - 1]?.name || 'My Files'}
+          </h1>
         </div>
-        
+
         <div className="flex items-center gap-3">
           {/* Sort dropdown */}
           <div className="flex items-center gap-2">
@@ -69,7 +202,10 @@ export default function FilesPage() {
           </button>
 
           {/* New folder button */}
-          <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors">
+          <button
+            onClick={() => setShowNewFolder(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
+          >
             <FolderPlus size={18} />
             <span>New Folder</span>
           </button>
@@ -86,6 +222,21 @@ export default function FilesPage() {
           </motion.button>
         </div>
       </div>
+
+      {/* Error Alert */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 flex items-center gap-2 text-sm text-destructive"
+          >
+            <AlertCircle size={16} />
+            {error}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Upload Modal */}
       <AnimatePresence>
@@ -119,28 +270,20 @@ export default function FilesPage() {
         )}
       </AnimatePresence>
 
-      {/* Files */}
-      {filteredFiles.length === 0 ? (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="flex flex-col items-center justify-center py-20"
-        >
-          <div className="w-20 h-20 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
-            <Upload className="w-10 h-10 text-muted-foreground" />
-          </div>
-          <h3 className="text-lg font-semibold text-foreground mb-1">No files yet</h3>
-          <p className="text-muted-foreground mb-6">Upload your first file to get started</p>
-          <button
-            onClick={() => setShowUpload(true)}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl gradient-primary text-white shadow-lg shadow-primary/25"
-          >
-            <Plus size={20} />
-            Upload Files
-          </button>
-        </motion.div>
+      {/* Loading State */}
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <FileCardSkeleton key={i} />
+          ))}
+        </div>
+      ) : filteredFiles.length === 0 ? (
+        <EmptyState
+          type={currentFolder ? 'folder' : 'files'}
+          onAction={() => setShowUpload(true)}
+        />
       ) : viewMode === 'grid' ? (
-        <motion.div 
+        <motion.div
           layout
           className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
         >
@@ -150,9 +293,13 @@ export default function FilesPage() {
                 key={file.id}
                 file={file}
                 isSelected={selectedFiles.includes(file.id)}
-                onSelect={selectFile}
-                onStar={toggleStar}
-                onDelete={removeFile}
+                onSelect={() => selectFile(file.id)}
+                onClick={() => handleFileClick(file)}
+                onStar={() => toggleStar(file.id)}
+                onDelete={() => setDeleteFile(file)}
+                onRename={() => setRenameFile(file)}
+                onShare={() => setShareFile(file)}
+                onMove={() => setMoveFile(file)}
               />
             ))}
           </AnimatePresence>
@@ -175,9 +322,10 @@ export default function FilesPage() {
                     key={file.id}
                     file={file}
                     isSelected={selectedFiles.includes(file.id)}
-                    onSelect={selectFile}
-                    onStar={toggleStar}
-                    onDelete={removeFile}
+                    onSelect={() => selectFile(file.id)}
+                    onClick={() => handleFileClick(file)}
+                    onStar={() => toggleStar(file.id)}
+                    onDelete={() => setDeleteFile(file)}
                   />
                 ))}
               </AnimatePresence>
@@ -207,6 +355,51 @@ export default function FilesPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Dialogs */}
+      <NewFolderDialog
+        isOpen={showNewFolder}
+        onClose={() => setShowNewFolder(false)}
+        onConfirm={handleCreateFolder}
+      />
+
+      {renameFile && (
+        <RenameDialog
+          isOpen={!!renameFile}
+          fileName={renameFile.name}
+          onClose={() => setRenameFile(null)}
+          onConfirm={handleRename}
+        />
+      )}
+
+      {deleteFile && (
+        <DeleteConfirmDialog
+          isOpen={!!deleteFile}
+          fileName={deleteFile.name}
+          isFolder={deleteFile.type === 'folder'}
+          onClose={() => setDeleteFile(null)}
+          onConfirm={handleDelete}
+        />
+      )}
+
+      {shareFile && (
+        <ShareDialog
+          isOpen={!!shareFile}
+          file={shareFile}
+          onClose={() => setShareFile(null)}
+          onShare={handleShare}
+        />
+      )}
+
+      {moveFile && (
+        <MoveDialog
+          isOpen={!!moveFile}
+          file={moveFile}
+          folders={files.filter(f => f.type === 'folder' && f.id !== moveFile.id)}
+          onClose={() => setMoveFile(null)}
+          onMove={handleMove}
+        />
+      )}
     </div>
   );
 }

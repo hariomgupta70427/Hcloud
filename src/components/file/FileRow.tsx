@@ -1,10 +1,10 @@
 import { motion } from 'framer-motion';
-import { 
-  Folder, 
-  FileText, 
-  Image, 
-  Film, 
-  Music, 
+import {
+  Folder,
+  FileText,
+  Image,
+  Film,
+  Music,
   FileArchive,
   FileCode,
   File,
@@ -15,30 +15,31 @@ import {
   Trash2,
   Edit3
 } from 'lucide-react';
-import { FileItem } from '@/stores/fileStore';
+import { FileItem } from '@/services/fileService';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 
 interface FileRowProps {
   file: FileItem;
   isSelected: boolean;
-  onSelect: (id: string, multiSelect?: boolean) => void;
-  onStar: (id: string) => void;
-  onDelete: (id: string) => void;
-  onDownload?: (id: string) => void;
-  onShare?: (id: string) => void;
+  onSelect: () => void;
+  onClick?: () => void;
+  onStar: () => void;
+  onDelete: () => void;
+  onDownload?: () => void;
+  onShare?: () => void;
 }
 
 const getFileIcon = (file: FileItem) => {
   if (file.type === 'folder') return Folder;
-  
+
   if (file.mimeType?.startsWith('image/')) return Image;
   if (file.mimeType?.startsWith('video/')) return Film;
   if (file.mimeType?.startsWith('audio/')) return Music;
   if (file.mimeType?.includes('zip') || file.mimeType?.includes('rar') || file.mimeType?.includes('7z')) return FileArchive;
   if (file.mimeType?.includes('pdf') || file.mimeType?.includes('document') || file.mimeType?.includes('word')) return FileText;
   if (file.mimeType?.includes('code') || file.mimeType?.includes('javascript') || file.mimeType?.includes('json')) return FileCode;
-  
+
   return File;
 };
 
@@ -73,13 +74,26 @@ const formatDate = (date: Date) => {
   }).format(new Date(date));
 };
 
-export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownload, onShare }: FileRowProps) {
+export function FileRow({
+  file,
+  isSelected,
+  onSelect,
+  onClick,
+  onStar,
+  onDelete,
+  onDownload,
+  onShare
+}: FileRowProps) {
   const [showMenu, setShowMenu] = useState(false);
   const Icon = getFileIcon(file);
   const iconColor = getFileColor(file);
 
   const handleClick = (e: React.MouseEvent) => {
-    onSelect(file.id, e.ctrlKey || e.metaKey);
+    if (e.ctrlKey || e.metaKey) {
+      onSelect();
+    } else {
+      onClick?.();
+    }
   };
 
   return (
@@ -123,12 +137,12 @@ export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownlo
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onStar(file.id);
+              onStar();
             }}
             className={cn(
               "p-1.5 rounded-lg transition-colors",
-              file.isStarred 
-                ? "text-yellow-500" 
+              file.isStarred
+                ? "text-yellow-500"
                 : "text-muted-foreground hover:text-foreground hover:bg-muted"
             )}
           >
@@ -139,7 +153,7 @@ export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownlo
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onDownload?.(file.id);
+                onDownload?.();
               }}
               className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
@@ -150,7 +164,7 @@ export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownlo
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onShare?.(file.id);
+              onShare?.();
             }}
             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           >
@@ -170,12 +184,12 @@ export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownlo
 
             {showMenu && (
               <>
-                <div 
-                  className="fixed inset-0 z-40" 
+                <div
+                  className="fixed inset-0 z-40"
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowMenu(false);
-                  }} 
+                  }}
                 />
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95 }}
@@ -195,7 +209,7 @@ export function FileRow({ file, isSelected, onSelect, onStar, onDelete, onDownlo
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDelete(file.id);
+                      onDelete();
                       setShowMenu(false);
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"

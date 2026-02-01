@@ -1,10 +1,10 @@
 import { motion } from 'framer-motion';
-import { 
-  Folder, 
-  FileText, 
-  Image, 
-  Film, 
-  Music, 
+import {
+  Folder,
+  FileText,
+  Image,
+  Film,
+  Music,
   FileArchive,
   FileCode,
   File,
@@ -13,32 +13,36 @@ import {
   Download,
   Share2,
   Trash2,
-  Edit3
+  Edit3,
+  Move
 } from 'lucide-react';
-import { FileItem } from '@/stores/fileStore';
+import { FileItem } from '@/services/fileService';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 
 interface FileCardProps {
   file: FileItem;
   isSelected: boolean;
-  onSelect: (id: string, multiSelect?: boolean) => void;
-  onStar: (id: string) => void;
-  onDelete: (id: string) => void;
-  onDownload?: (id: string) => void;
-  onShare?: (id: string) => void;
+  onSelect: () => void;
+  onClick?: () => void;
+  onStar: () => void;
+  onDelete: () => void;
+  onRename?: () => void;
+  onShare?: () => void;
+  onMove?: () => void;
+  onDownload?: () => void;
 }
 
 const getFileIcon = (file: FileItem) => {
   if (file.type === 'folder') return Folder;
-  
+
   if (file.mimeType?.startsWith('image/')) return Image;
   if (file.mimeType?.startsWith('video/')) return Film;
   if (file.mimeType?.startsWith('audio/')) return Music;
   if (file.mimeType?.includes('zip') || file.mimeType?.includes('rar') || file.mimeType?.includes('7z')) return FileArchive;
   if (file.mimeType?.includes('pdf') || file.mimeType?.includes('document') || file.mimeType?.includes('word')) return FileText;
   if (file.mimeType?.includes('code') || file.mimeType?.includes('javascript') || file.mimeType?.includes('json')) return FileCode;
-  
+
   return File;
 };
 
@@ -73,20 +77,32 @@ const formatDate = (date: Date) => {
   }).format(new Date(date));
 };
 
-export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownload, onShare }: FileCardProps) {
+export function FileCard({
+  file,
+  isSelected,
+  onSelect,
+  onClick,
+  onStar,
+  onDelete,
+  onRename,
+  onShare,
+  onMove,
+  onDownload
+}: FileCardProps) {
   const [showMenu, setShowMenu] = useState(false);
   const Icon = getFileIcon(file);
   const iconColor = getFileColor(file);
 
   const handleClick = (e: React.MouseEvent) => {
-    onSelect(file.id, e.ctrlKey || e.metaKey);
+    if (e.ctrlKey || e.metaKey) {
+      onSelect();
+    } else {
+      onClick?.();
+    }
   };
 
   const handleDoubleClick = () => {
-    if (file.type === 'folder') {
-      // Navigate to folder
-      console.log('Navigate to folder:', file.id);
-    }
+    onClick?.();
   };
 
   return (
@@ -106,17 +122,17 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
       {/* Thumbnail / Icon */}
       <div className="relative h-36 flex items-center justify-center bg-muted/30">
         <Icon className={cn("w-16 h-16", iconColor)} />
-        
+
         {/* Star button */}
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onStar(file.id);
+            onStar();
           }}
           className={cn(
             "absolute top-2 left-2 p-1.5 rounded-lg transition-all",
-            file.isStarred 
-              ? "text-yellow-500 bg-yellow-500/10" 
+            file.isStarred
+              ? "text-yellow-500 bg-yellow-500/10"
               : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted"
           )}
         >
@@ -138,12 +154,12 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
           {/* Dropdown menu */}
           {showMenu && (
             <>
-              <div 
-                className="fixed inset-0 z-40" 
+              <div
+                className="fixed inset-0 z-40"
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowMenu(false);
-                }} 
+                }}
               />
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: -5 }}
@@ -154,7 +170,7 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDownload?.(file.id);
+                      onDownload?.();
                       setShowMenu(false);
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
@@ -166,7 +182,7 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onShare?.(file.id);
+                    onShare?.();
                     setShowMenu(false);
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
@@ -177,6 +193,7 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    onRename?.();
                     setShowMenu(false);
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
@@ -184,11 +201,22 @@ export function FileCard({ file, isSelected, onSelect, onStar, onDelete, onDownl
                   <Edit3 size={14} />
                   Rename
                 </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMove?.();
+                    setShowMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  <Move size={14} />
+                  Move
+                </button>
                 <div className="my-1 border-t border-border" />
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete(file.id);
+                    onDelete();
                     setShowMenu(false);
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"

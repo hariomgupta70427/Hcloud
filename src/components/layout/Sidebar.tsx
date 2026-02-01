@@ -1,20 +1,24 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Cloud, 
-  FolderOpen, 
-  Star, 
-  Clock, 
-  Users, 
-  Trash2, 
-  Settings, 
+import { useState, useEffect } from 'react';
+import {
+  Cloud,
+  FolderOpen,
+  Star,
+  Clock,
+  Users,
+  Trash2,
+  Settings,
   HelpCircle,
   ChevronLeft,
   Upload,
-  Infinity as InfinityIcon
+  Infinity as InfinityIcon,
+  HardDrive
 } from 'lucide-react';
 import { useUIStore } from '@/stores/uiStore';
+import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import { getStorageStats } from '@/services/fileService';
 
 const navItems = [
   { icon: FolderOpen, label: 'My Files', path: '/dashboard/files' },
@@ -29,10 +33,25 @@ const bottomItems = [
   { icon: HelpCircle, label: 'Help', path: '/help' },
 ];
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
 export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
+  const { user } = useAuthStore();
+  const [storageStats, setStorageStats] = useState({ totalFiles: 0, totalFolders: 0, totalSize: 0 });
+
+  useEffect(() => {
+    if (user?.id) {
+      getStorageStats(user.id).then(setStorageStats).catch(console.error);
+    }
+  }, [user?.id]);
 
   return (
     <motion.aside
@@ -103,9 +122,9 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto scrollbar-hide">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path || 
+          const isActive = location.pathname === item.path ||
             (item.path === '/dashboard/files' && location.pathname === '/dashboard');
-          
+
           return (
             <Link
               key={item.path}
@@ -144,7 +163,11 @@ export function Sidebar() {
           sidebarCollapsed && "justify-center"
         )}>
           <div className="flex-shrink-0 p-2 rounded-lg bg-primary/10">
-            <InfinityIcon size={16} className="text-primary" />
+            {user?.storageMode === 'byod' ? (
+              <HardDrive size={16} className="text-primary" />
+            ) : (
+              <InfinityIcon size={16} className="text-primary" />
+            )}
           </div>
           <AnimatePresence>
             {!sidebarCollapsed && (
@@ -152,9 +175,15 @@ export function Sidebar() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
+                className="min-w-0"
               >
-                <p className="text-xs text-muted-foreground">Storage</p>
-                <p className="text-sm font-semibold text-foreground">Unlimited</p>
+                <p className="text-xs text-muted-foreground">Storage Used</p>
+                <p className="text-sm font-semibold text-foreground">
+                  {formatBytes(storageStats.totalSize)}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {storageStats.totalFiles} files • {storageStats.totalFolders} folders
+                </p>
               </motion.div>
             )}
           </AnimatePresence>
@@ -165,7 +194,7 @@ export function Sidebar() {
       <div className="px-3 pb-4 space-y-1 border-t border-sidebar-border pt-3">
         {bottomItems.map((item) => {
           const isActive = location.pathname === item.path;
-          
+
           return (
             <Link
               key={item.path}
