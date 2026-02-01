@@ -12,6 +12,7 @@ interface AuthState {
   // Actions
   setUser: (user: UserData | null) => void;
   login: (email: string, password: string) => Promise<void>;
+  loginWithGoogle: () => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -50,6 +51,29 @@ export const useAuthStore = create<AuthState>()(
             message = 'Invalid email address';
           } else if (error.code === 'auth/too-many-requests') {
             message = 'Too many attempts. Please try again later';
+          }
+          set({ isLoading: false, error: message });
+          throw new Error(message);
+        }
+      },
+
+      loginWithGoogle: async () => {
+        set({ isLoading: true, error: null });
+        try {
+          const user = await authService.signInWithGoogle();
+          set({
+            user,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+        } catch (error: any) {
+          let message = 'Google sign-in failed';
+          if (error.code === 'auth/popup-closed-by-user') {
+            message = 'Sign-in popup was closed';
+          } else if (error.code === 'auth/popup-blocked') {
+            message = 'Please enable popups for this site';
+          } else if (error.code === 'auth/cancelled-popup-request') {
+            message = 'Sign-in was cancelled';
           }
           set({ isLoading: false, error: message });
           throw new Error(message);

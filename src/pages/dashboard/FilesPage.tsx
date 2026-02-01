@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle } from 'lucide-react';
+import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle, Loader2, CheckCircle, X } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -15,8 +15,12 @@ import { ShareDialog } from '@/components/file/ShareDialog';
 import { MoveDialog } from '@/components/file/MoveDialog';
 import { FileCardSkeleton } from '@/components/common/Skeleton';
 import { EmptyState } from '@/components/common/EmptyState';
+import { PreviewModal, getPreviewType, PreviewFile } from '@/components/preview/PreviewModal';
 import { FileItem } from '@/services/fileService';
 import * as fileService from '@/services/fileService';
+import { getFileFromTelegram } from '@/services/telegramService';
+import { useUpload } from '@/hooks/useUpload';
+import { toast } from 'sonner';
 
 export default function FilesPage() {
   const { user } = useAuthStore();
@@ -39,6 +43,7 @@ export default function FilesPage() {
     shareItem,
   } = useFileStore();
   const { viewMode, searchQuery } = useUIStore();
+  const { uploadFiles, uploadingFiles, isUploading, clearCompleted } = useUpload();
 
   const [showUpload, setShowUpload] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -49,6 +54,10 @@ export default function FilesPage() {
   const [deleteFile, setDeleteFile] = useState<FileItem | null>(null);
   const [shareFile, setShareFile] = useState<FileItem | null>(null);
   const [moveFile, setMoveFile] = useState<FileItem | null>(null);
+
+  // Preview state
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   // Load files on mount and when folder changes
   useEffect(() => {
@@ -79,11 +88,8 @@ export default function FilesPage() {
 
   const handleFilesSelected = async (fileList: FileList) => {
     if (!user?.id) return;
-
-    // TODO: Implement Telegram upload
-    // For now, just log and close
-    console.log('Files to upload:', Array.from(fileList));
-    setShowUpload(false);
+    const filesArray = Array.from(fileList);
+    await uploadFiles(filesArray);
   };
 
   const handleCreateFolder = async (name: string) => {
@@ -136,12 +142,60 @@ export default function FilesPage() {
     }
   };
 
-  const handleFileClick = (file: FileItem) => {
+  const handleFileClick = async (file: FileItem) => {
     if (file.type === 'folder') {
       navigateToFolder(file.id, file.name);
     } else {
-      // Open file preview
-      selectFile(file.id);
+      // Open file preview by fetching from Telegram
+      if (!file.telegramFileId) {
+        toast.error('File not available');
+        return;
+      }
+
+      setIsLoadingPreview(true);
+      toast.loading('Loading file...', { id: 'file-loading' });
+
+      try {
+        const result = await getFileFromTelegram(file.telegramFileId);
+
+        if (result.success && result.downloadUrl) {
+          const previewType = getPreviewType(file.name, file.mimeType);
+
+          setPreviewFile({
+            id: file.id,
+            name: file.name,
+            url: result.downloadUrl,
+            type: previewType,
+            mimeType: file.mimeType,
+          });
+
+          toast.dismiss('file-loading');
+        } else {
+          toast.error('Failed to load file', { id: 'file-loading' });
+        }
+      } catch (error: any) {
+        console.error('Failed to load file:', error);
+        toast.error('Failed to load file', { id: 'file-loading' });
+      } finally {
+        setIsLoadingPreview(false);
+      }
+    }
+  };
+
+  const handleDownloadFile = async (previewFile: PreviewFile) => {
+    try {
+      // Create a download link
+      const link = document.createElement('a');
+      link.href = previewFile.url;
+      link.download = previewFile.name;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      toast.success(`Downloading ${previewFile.name}`);
+    } catch (error) {
+      console.error('Download failed:', error);
+      toast.error('Download failed');
     }
   };
 
@@ -246,23 +300,101 @@ export default function FilesPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-40"
-              onClick={() => setShowUpload(false)}
+              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100]"
+              onClick={() => !isUploading && setShowUpload(false)}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="fixed inset-x-4 top-1/2 -translate-y-1/2 max-w-xl mx-auto p-6 rounded-2xl bg-card border border-border shadow-2xl z-50"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              style={{
+                position: 'fixed',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                zIndex: 101,
+                width: '90%',
+                maxWidth: '500px',
+                maxHeight: '80vh',
+                overflow: 'auto',
+              }}
+              className="p-6 rounded-2xl bg-card border border-border shadow-2xl"
             >
-              <h2 className="text-xl font-semibold text-foreground mb-4">Upload Files</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-foreground">Upload Files</h2>
+                <button
+                  onClick={() => !isUploading && setShowUpload(false)}
+                  className="p-2 rounded-lg hover:bg-muted transition-colors"
+                  disabled={isUploading}
+                >
+                  <X size={20} className="text-muted-foreground" />
+                </button>
+              </div>
+
               <UploadZone onFilesSelected={handleFilesSelected} />
-              <div className="mt-4 flex justify-end">
+
+              {/* Upload Progress */}
+              {uploadingFiles.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  className="mt-4 space-y-2 max-h-48 overflow-y-auto"
+                >
+                  {uploadingFiles.map((item, index) => (
+                    <div
+                      key={`${item.file.name}-${index}`}
+                      className="flex items-center gap-3 p-3 rounded-lg bg-muted/50"
+                    >
+                      {item.status === 'uploading' && (
+                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                      )}
+                      {item.status === 'success' && (
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                      )}
+                      {item.status === 'error' && (
+                        <AlertCircle className="w-4 h-4 text-red-500" />
+                      )}
+                      {item.status === 'pending' && (
+                        <div className="w-4 h-4 rounded-full border-2 border-muted-foreground" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{item.file.name}</p>
+                        {item.status === 'uploading' && (
+                          <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <motion.div
+                              className="h-full bg-primary rounded-full"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${item.progress}%` }}
+                            />
+                          </div>
+                        )}
+                        {item.status === 'error' && (
+                          <p className="text-xs text-red-500">{item.error}</p>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {item.status === 'uploading' ? `${item.progress}%` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </motion.div>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2">
+                {uploadingFiles.some(f => f.status === 'success' || f.status === 'error') && (
+                  <button
+                    onClick={clearCompleted}
+                    className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Clear Completed
+                  </button>
+                )}
                 <button
                   onClick={() => setShowUpload(false)}
-                  className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  disabled={isUploading}
+                  className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
-                  Cancel
+                  {isUploading ? 'Uploading...' : 'Close'}
                 </button>
               </div>
             </motion.div>
@@ -360,15 +492,15 @@ export default function FilesPage() {
       <NewFolderDialog
         isOpen={showNewFolder}
         onClose={() => setShowNewFolder(false)}
-        onConfirm={handleCreateFolder}
+        onCreate={handleCreateFolder}
       />
 
       {renameFile && (
         <RenameDialog
           isOpen={!!renameFile}
-          fileName={renameFile.name}
+          currentName={renameFile.name}
           onClose={() => setRenameFile(null)}
-          onConfirm={handleRename}
+          onRename={handleRename}
         />
       )}
 
@@ -385,21 +517,38 @@ export default function FilesPage() {
       {shareFile && (
         <ShareDialog
           isOpen={!!shareFile}
-          file={shareFile}
+          fileName={shareFile.name}
           onClose={() => setShareFile(null)}
-          onShare={handleShare}
+          onCreateLink={async (options) => {
+            await handleShare(options);
+            return `${window.location.origin}/share/${shareFile.id}`;
+          }}
+          onCopyLink={(link) => navigator.clipboard.writeText(link)}
         />
       )}
 
       {moveFile && (
         <MoveDialog
           isOpen={!!moveFile}
-          file={moveFile}
-          folders={files.filter(f => f.type === 'folder' && f.id !== moveFile.id)}
+          fileName={moveFile.name}
+          currentFolderId={moveFile.parentId || undefined}
+          folders={files.filter(f => f.type === 'folder' && f.id !== moveFile.id).map(f => ({
+            id: f.id,
+            name: f.name,
+            parentId: f.parentId || undefined,
+          }))}
           onClose={() => setMoveFile(null)}
-          onMove={handleMove}
+          onMove={(folderId) => handleMove(folderId || '')}
         />
       )}
+
+      {/* File Preview Modal */}
+      <PreviewModal
+        file={previewFile}
+        isOpen={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        onDownload={handleDownloadFile}
+      />
     </div>
   );
 }

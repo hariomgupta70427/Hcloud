@@ -19,7 +19,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export function LoginForm() {
   const navigate = useNavigate();
-  const { login, isLoading, error, setError } = useAuthStore();
+  const { login, loginWithGoogle, isLoading, error, setError } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginFormData>({
@@ -39,9 +39,14 @@ export function LoginForm() {
     }
   };
 
-  const handleGoogleLogin = () => {
-    // Implement Google OAuth
-    console.log('Google login');
+  const handleGoogleLogin = async () => {
+    try {
+      setError(null);
+      await loginWithGoogle();
+      navigate('/dashboard');
+    } catch (err) {
+      // Error is already set in the store
+    }
   };
 
   return (

@@ -27,6 +27,8 @@ export interface FileItem {
     userId: string;
     isStarred: boolean;
     isShared: boolean;
+    isDeleted?: boolean;
+    deletedAt?: Date;
     shareSettings?: {
         password?: string;
         expiresAt?: Date;
@@ -70,6 +72,8 @@ function docToFileItem(docId: string, data: any): FileItem {
         userId: data.userId,
         isStarred: data.isStarred || false,
         isShared: data.isShared || false,
+        isDeleted: data.isDeleted || false,
+        deletedAt: data.deletedAt?.toDate?.() || undefined,
         shareSettings: data.shareSettings,
         path: data.path,
         thumbnail: data.thumbnail,
@@ -91,7 +95,7 @@ export async function getUserFiles(userId: string): Promise<FileItem[]> {
     return snapshot.docs.map((doc) => docToFileItem(doc.id, doc.data()));
 }
 
-// Get files in a specific folder
+// Get files in a specific folder (excluding deleted)
 export async function getFilesInFolder(
     userId: string,
     folderId: string | null
@@ -99,13 +103,18 @@ export async function getFilesInFolder(
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('parentId', '==', folderId),
-        orderBy('type', 'desc'),
-        orderBy('name', 'asc')
+        where('parentId', '==', folderId)
     );
 
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((doc) => docToFileItem(doc.id, doc.data()));
+    // Filter out deleted items and sort
+    return snapshot.docs
+        .map((doc) => docToFileItem(doc.id, doc.data()))
+        .filter((file) => !file.isDeleted)
+        .sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
 }
 
 // Get starred files
@@ -192,7 +201,7 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         }
     }
 
-    const fileData = {
+    const fileData: Record<string, any> = {
         name: data.name,
         type: 'file',
         mimeType: data.mimeType,
@@ -203,17 +212,30 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         isStarred: false,
         isShared: false,
         path,
-        thumbnail: data.thumbnail,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
     };
+
+    // Only add thumbnail if it exists (Firestore doesn't allow undefined)
+    if (data.thumbnail) {
+        fileData.thumbnail = data.thumbnail;
+    }
 
     const docRef = await addDoc(filesCollection, fileData);
 
     return {
         id: docRef.id,
-        ...fileData,
+        name: fileData.name,
         type: 'file' as const,
+        mimeType: fileData.mimeType,
+        size: fileData.size,
+        telegramFileId: fileData.telegramFileId,
+        parentId: fileData.parentId,
+        userId: fileData.userId,
+        isStarred: false,
+        isShared: false,
+        path: fileData.path,
+        thumbnail: fileData.thumbnail,
         createdAt: new Date(),
         updatedAt: new Date(),
     };

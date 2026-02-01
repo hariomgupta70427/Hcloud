@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Search, 
-  LayoutGrid, 
-  List, 
-  Bell, 
-  Sun, 
-  Moon, 
+import {
+  Search,
+  LayoutGrid,
+  List,
+  Bell,
+  Sun,
+  Moon,
   User,
   LogOut,
   Settings,
@@ -34,7 +34,7 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 flex items-center justify-between px-6 border-b border-border bg-card/50 backdrop-blur-sm">
+    <header className="h-16 flex items-center justify-between px-6 border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-20">
       {/* Search */}
       <div className="flex-1 max-w-xl">
         <div className="relative">
@@ -57,8 +57,8 @@ export function Header() {
             onClick={() => setViewMode('grid')}
             className={cn(
               "p-2 rounded-md transition-colors",
-              viewMode === 'grid' 
-                ? 'bg-card text-foreground shadow-sm' 
+              viewMode === 'grid'
+                ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
@@ -68,8 +68,8 @@ export function Header() {
             onClick={() => setViewMode('list')}
             className={cn(
               "p-2 rounded-md transition-colors",
-              viewMode === 'list' 
-                ? 'bg-card text-foreground shadow-sm' 
+              viewMode === 'list'
+                ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
@@ -86,7 +86,7 @@ export function Header() {
             <Bell size={20} />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary" />
           </button>
-          
+
           <AnimatePresence>
             {showNotifications && (
               <motion.div
@@ -130,9 +130,9 @@ export function Header() {
           <AnimatePresence>
             {showUserMenu && (
               <>
-                <div 
-                  className="fixed inset-0 z-40" 
-                  onClick={() => setShowUserMenu(false)} 
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setShowUserMenu(false)}
                 />
                 <motion.div
                   initial={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -144,7 +144,7 @@ export function Header() {
                     <p className="font-medium text-foreground">{user?.name}</p>
                     <p className="text-sm text-muted-foreground">{user?.email}</p>
                   </div>
-                  
+
                   <div className="py-1">
                     <button
                       onClick={() => {
@@ -167,7 +167,7 @@ export function Header() {
                       Profile
                     </button>
                   </div>
-                  
+
                   <div className="border-t border-border py-1">
                     <button
                       onClick={handleLogout}

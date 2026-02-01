@@ -1,36 +1,36 @@
-import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
-import { 
-  FolderOpen, 
-  Star, 
-  Clock, 
-  Users, 
-  Upload, 
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  FolderOpen,
+  Star,
+  Clock,
+  Users,
+  Upload,
   TrendingUp,
   FileText,
   Image,
   Film,
-  ArrowRight
+  ArrowRight,
+  FolderPlus,
+  X,
+  CheckCircle,
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
-
-const quickActions = [
-  { icon: Upload, label: 'Upload Files', color: 'bg-primary/10 text-primary' },
-  { icon: FolderOpen, label: 'New Folder', color: 'bg-blue-500/10 text-blue-500' },
-  { icon: Star, label: 'Starred', color: 'bg-yellow-500/10 text-yellow-500' },
-  { icon: Users, label: 'Share Files', color: 'bg-green-500/10 text-green-500' },
-];
-
-const fileTypes = [
-  { icon: FileText, label: 'Documents', count: 24, color: 'text-blue-500' },
-  { icon: Image, label: 'Images', count: 156, color: 'text-green-500' },
-  { icon: Film, label: 'Videos', count: 12, color: 'text-purple-500' },
-];
+import { NewFolderDialog } from '@/components/file/NewFolderDialog';
+import { UploadZone } from '@/components/file/UploadZone';
+import { useUpload } from '@/hooks/useUpload';
 
 export default function DashboardPage() {
-  const { files } = useFileStore();
+  const navigate = useNavigate();
+  const { files, createFolder } = useFileStore();
   const { user } = useAuthStore();
+  const { uploadFiles, uploadingFiles, isUploading, clearCompleted } = useUpload();
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
 
   const recentFiles = files
     .filter(f => f.type === 'file')
@@ -38,6 +38,63 @@ export default function DashboardPage() {
     .slice(0, 5);
 
   const starredFiles = files.filter(f => f.isStarred).slice(0, 4);
+
+  // Calculate actual file type counts
+  const fileTypeCounts = {
+    documents: files.filter(f => f.mimeType?.includes('document') || f.mimeType?.includes('pdf') || f.mimeType?.includes('text')).length,
+    images: files.filter(f => f.mimeType?.startsWith('image/')).length,
+    videos: files.filter(f => f.mimeType?.startsWith('video/')).length,
+  };
+
+  const fileTypes = [
+    { icon: FileText, label: 'Documents', count: fileTypeCounts.documents, color: 'text-blue-500' },
+    { icon: Image, label: 'Images', count: fileTypeCounts.images, color: 'text-green-500' },
+    { icon: Film, label: 'Videos', count: fileTypeCounts.videos, color: 'text-purple-500' },
+  ];
+
+  const handleQuickAction = (action: string) => {
+    switch (action) {
+      case 'upload':
+        setShowUpload(true);
+        break;
+      case 'folder':
+        setShowNewFolder(true);
+        break;
+      case 'starred':
+        navigate('/dashboard/starred');
+        break;
+      case 'share':
+        navigate('/dashboard/shared');
+        break;
+    }
+  };
+
+  const handleCreateFolder = async (name: string) => {
+    if (!user?.id) return;
+    try {
+      await createFolder(name, user.id);
+      setShowNewFolder(false);
+    } catch (err) {
+      console.error('Failed to create folder:', err);
+    }
+  };
+
+  const handleFilesSelected = async (fileList: FileList) => {
+    if (!user?.id) return;
+    const filesArray = Array.from(fileList);
+    await uploadFiles(filesArray);
+    // Keep modal open to show progress, close when done
+    if (!isUploading) {
+      setShowUpload(false);
+    }
+  };
+
+  const quickActions = [
+    { icon: Upload, label: 'Upload Files', color: 'bg-primary/10 text-primary', action: 'upload' },
+    { icon: FolderPlus, label: 'New Folder', color: 'bg-blue-500/10 text-blue-500', action: 'folder' },
+    { icon: Star, label: 'Starred', color: 'bg-yellow-500/10 text-yellow-500', action: 'starred' },
+    { icon: Users, label: 'Share Files', color: 'bg-green-500/10 text-green-500', action: 'share' },
+  ];
 
   return (
     <div className="space-y-8">
@@ -54,15 +111,15 @@ export default function DashboardPage() {
           <p className="text-white/80 max-w-md">
             Your unlimited cloud storage is ready. Upload, organize, and share your files securely.
           </p>
-          <Link
-            to="/dashboard/files"
+          <button
+            onClick={() => setShowUpload(true)}
             className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 rounded-xl bg-white/20 hover:bg-white/30 backdrop-blur-sm transition-colors font-medium"
           >
             <Upload size={18} />
             Upload Files
-          </Link>
+          </button>
         </div>
-        
+
         {/* Decorative elements */}
         <div className="absolute top-0 right-0 w-64 h-64 rounded-full bg-white/10 -translate-y-1/2 translate-x-1/4" />
         <div className="absolute bottom-0 right-1/4 w-32 h-32 rounded-full bg-white/5 translate-y-1/2" />
@@ -84,6 +141,7 @@ export default function DashboardPage() {
               transition={{ delay: 0.1 + index * 0.05 }}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
+              onClick={() => handleQuickAction(action.action)}
               className="flex flex-col items-center gap-3 p-6 rounded-xl bg-card border border-border hover:border-primary/30 transition-all"
             >
               <div className={`p-3 rounded-xl ${action.color}`}>
@@ -110,7 +168,7 @@ export default function DashboardPage() {
               </div>
               <h2 className="text-lg font-semibold text-foreground">Recent Files</h2>
             </div>
-            <Link 
+            <Link
               to="/dashboard/recent"
               className="text-sm text-primary hover:underline flex items-center gap-1"
             >
@@ -189,7 +247,7 @@ export default function DashboardPage() {
               </div>
               <h2 className="text-lg font-semibold text-foreground">Starred</h2>
             </div>
-            <Link 
+            <Link
               to="/dashboard/starred"
               className="text-sm text-primary hover:underline flex items-center gap-1"
             >
@@ -215,6 +273,123 @@ export default function DashboardPage() {
           </div>
         </motion.div>
       )}
+
+      {/* New Folder Dialog */}
+      <NewFolderDialog
+        isOpen={showNewFolder}
+        onClose={() => setShowNewFolder(false)}
+        onCreate={handleCreateFolder}
+      />
+
+      {/* Upload Modal */}
+      <AnimatePresence>
+        {showUpload && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100]"
+              onClick={() => !isUploading && setShowUpload(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              style={{
+                position: 'fixed',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                zIndex: 101,
+                width: '90%',
+                maxWidth: '500px',
+                maxHeight: '80vh',
+                overflow: 'auto',
+              }}
+              className="p-6 rounded-2xl bg-card border border-border shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-foreground">Upload Files</h2>
+                <button
+                  onClick={() => !isUploading && setShowUpload(false)}
+                  className="p-2 rounded-lg hover:bg-muted transition-colors"
+                  disabled={isUploading}
+                >
+                  <X size={20} className="text-muted-foreground" />
+                </button>
+              </div>
+
+              <UploadZone onFilesSelected={handleFilesSelected} />
+
+              {/* Upload Progress */}
+              {uploadingFiles.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  className="mt-4 space-y-2 max-h-48 overflow-y-auto"
+                >
+                  {uploadingFiles.map((item, index) => (
+                    <div
+                      key={`${item.file.name}-${index}`}
+                      className="flex items-center gap-3 p-3 rounded-lg bg-muted/50"
+                    >
+                      {item.status === 'uploading' && (
+                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                      )}
+                      {item.status === 'success' && (
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                      )}
+                      {item.status === 'error' && (
+                        <AlertCircle className="w-4 h-4 text-red-500" />
+                      )}
+                      {item.status === 'pending' && (
+                        <div className="w-4 h-4 rounded-full border-2 border-muted-foreground" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{item.file.name}</p>
+                        {item.status === 'uploading' && (
+                          <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <motion.div
+                              className="h-full bg-primary rounded-full"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${item.progress}%` }}
+                            />
+                          </div>
+                        )}
+                        {item.status === 'error' && (
+                          <p className="text-xs text-red-500">{item.error}</p>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {item.status === 'uploading' ? `${item.progress}%` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </motion.div>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2">
+                {uploadingFiles.some(f => f.status === 'success' || f.status === 'error') && (
+                  <button
+                    onClick={clearCompleted}
+                    className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Clear Completed
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowUpload(false)}
+                  disabled={isUploading}
+                  className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                >
+                  {isUploading ? 'Uploading...' : 'Close'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

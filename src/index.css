@@ -298,3 +298,188 @@
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
 }
+
+/* ======================== */
+/* Mobile PWA Native Feel   */
+/* ======================== */
+
+/* Safe area insets for notched devices */
+html {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* Prevent pull-to-refresh on PWA */
+html, body {
+  overscroll-behavior-y: contain;
+}
+
+/* Smooth momentum scrolling on iOS */
+.scroll-smooth {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent text selection on UI elements */
+.select-none {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Prevent zoom on double-tap */
+* {
+  touch-action: manipulation;
+}
+
+/* Mobile bottom navigation */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: hsl(var(--card) / 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid hsl(var(--border));
+  z-index: 50;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Show bottom nav only on mobile */
+@media (max-width: 768px) {
+  .mobile-bottom-nav {
+    display: block;
+  }
+  
+  /* Hide sidebar on mobile when bottom nav is visible */
+  .mobile-hide-sidebar {
+    display: none !important;
+  }
+  
+  /* Add padding to main content for bottom nav */
+  .mobile-main-padding {
+    padding-bottom: calc(70px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Tap highlight for native feel */
+button, a, .clickable {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:active, a:active, .clickable:active {
+  transform: scale(0.97);
+  transition: transform 0.1s ease;
+}
+
+/* Haptic-style button feedback */
+.haptic-button {
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+
+.haptic-button:active {
+  transform: scale(0.95);
+  opacity: 0.8;
+}
+
+/* iOS-style rubber band effect prevention */
+.no-bounce {
+  overscroll-behavior: none;
+}
+
+/* Pull-to-refresh indicator styling */
+.pull-indicator {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* Loading spinner for PWA */
+.pwa-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid hsl(var(--muted));
+  border-top-color: hsl(var(--primary));
+  border-radius: 50%;
+  animation: spinner 0.8s linear infinite;
+}
+
+@keyframes spinner {
+  to { transform: rotate(360deg); }
+}
+
+/* Install prompt banner */
+.install-banner {
+  position: fixed;
+  bottom: 80px;
+  left: 16px;
+  right: 16px;
+  padding: 16px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  box-shadow: 0 8px 32px hsl(var(--foreground) / 0.15);
+  z-index: 60;
+  animation: slideUp 0.3s ease;
+}
+
+@media (min-width: 769px) {
+  .install-banner {
+    left: auto;
+    right: 24px;
+    bottom: 24px;
+    width: 360px;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Swipe gestures support */
+.swipeable {
+  touch-action: pan-y;
+}
+
+/* Card press effect for file cards on mobile */
+@media (max-width: 768px) {
+  .file-card:active {
+    transform: scale(0.98) !important;
+    transition: transform 0.15s ease !important;
+  }
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.page-exit {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.page-exit-active {
+  opacity: 0;
+  transform: translateX(-20px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+

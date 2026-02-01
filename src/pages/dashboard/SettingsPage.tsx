@@ -1,13 +1,14 @@
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
-import { 
-  User, 
-  Bell, 
-  Shield, 
-  Palette, 
-  HardDrive, 
+import {
+  User,
+  Bell,
+  Shield,
+  Palette,
+  HardDrive,
   LogOut,
   ChevronRight,
+  ChevronLeft,
   Sun,
   Moon,
   Monitor
@@ -15,6 +16,10 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useNavigate } from 'react-router-dom';
+import { ProfileEditForm } from '@/components/profile/ProfileEditForm';
+import { NotificationSettings } from '@/components/settings/NotificationSettings';
+import { SecuritySettings } from '@/components/settings/SecuritySettings';
+import { StorageSettings } from '@/components/settings/StorageSettings';
 
 const settingsSections = [
   {
@@ -45,14 +50,104 @@ const settingsSections = [
 
 export default function SettingsPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { user, logout, updateProfile } = useAuthStore();
   const { theme, setTheme } = useUIStore();
-  const [activeSection, setActiveSection] = useState('appearance');
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [showProfileEdit, setShowProfileEdit] = useState(false);
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
+
+  const handleSectionClick = (sectionId: string) => {
+    if (sectionId === 'profile') {
+      setShowProfileEdit(true);
+    } else {
+      setActiveSection(sectionId);
+    }
+  };
+
+  const handleBack = () => {
+    setActiveSection(null);
+  };
+
+  const handleSaveProfile = async (data: { name: string; phone?: string; avatar?: string }) => {
+    await updateProfile(data);
+    setShowProfileEdit(false);
+  };
+
+  const renderSectionContent = () => {
+    switch (activeSection) {
+      case 'notifications':
+        return (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground mb-6 transition-colors"
+            >
+              <ChevronLeft size={20} />
+              Back to Settings
+            </button>
+            <NotificationSettings />
+          </motion.div>
+        );
+      case 'security':
+        return (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground mb-6 transition-colors"
+            >
+              <ChevronLeft size={20} />
+              Back to Settings
+            </button>
+            <SecuritySettings />
+          </motion.div>
+        );
+      case 'storage':
+        return (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground mb-6 transition-colors"
+            >
+              <ChevronLeft size={20} />
+              Back to Settings
+            </button>
+            <StorageSettings
+              currentMode={user?.storageMode || 'managed'}
+              isVerified={true}
+            />
+          </motion.div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  // If a section is active, show its content
+  if (activeSection) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <AnimatePresence mode="wait">
+          {renderSectionContent()}
+        </AnimatePresence>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
@@ -109,11 +204,10 @@ export default function SettingsPage() {
             <button
               key={option.value}
               onClick={() => setTheme(option.value)}
-              className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
-                theme === option.value
+              className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${theme === option.value
                   ? 'border-primary bg-primary/5'
                   : 'border-border hover:border-primary/30'
-              }`}
+                }`}
             >
               <option.icon className={`w-6 h-6 ${theme === option.value ? 'text-primary' : 'text-muted-foreground'}`} />
               <span className={`text-sm font-medium ${theme === option.value ? 'text-primary' : 'text-foreground'}`}>
@@ -134,9 +228,9 @@ export default function SettingsPage() {
         {settingsSections.map((section, index) => (
           <button
             key={section.id}
-            className={`w-full flex items-center gap-4 p-4 hover:bg-muted/50 transition-colors ${
-              index !== settingsSections.length - 1 ? 'border-b border-border' : ''
-            }`}
+            onClick={() => handleSectionClick(section.id)}
+            className={`w-full flex items-center gap-4 p-4 hover:bg-muted/50 transition-colors ${index !== settingsSections.length - 1 ? 'border-b border-border' : ''
+              }`}
           >
             <div className="p-2 rounded-lg bg-muted">
               <section.icon className="w-5 h-5 text-muted-foreground" />
@@ -161,6 +255,21 @@ export default function SettingsPage() {
         <LogOut size={20} />
         <span className="font-medium">Sign Out</span>
       </motion.button>
+
+      {/* Profile Edit Modal */}
+      {user && (
+        <ProfileEditForm
+          isOpen={showProfileEdit}
+          user={{
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            avatar: user.avatar,
+          }}
+          onClose={() => setShowProfileEdit(false)}
+          onSave={handleSaveProfile}
+        />
+      )}
     </div>
   );
 }
