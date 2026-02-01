@@ -100,20 +100,37 @@ export function PDFPreview({
             {/* PDF Content */}
             <div className="flex-1 overflow-auto flex items-center justify-center p-4">
                 <div
-                    className="bg-white rounded-lg shadow-2xl overflow-hidden"
+                    className="bg-white rounded-lg shadow-2xl overflow-hidden relative"
                     style={{ transform: `scale(${scale})`, transformOrigin: 'center center' }}
                 >
                     {loading && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+                        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 z-10">
                             <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
                         </div>
                     )}
-                    <iframe
-                        src={`${src}#toolbar=0`}
+                    {/* Use object tag for better blob URL support */}
+                    <object
+                        data={src}
+                        type="application/pdf"
                         className="w-[800px] h-[90vh]"
                         onLoad={() => setLoading(false)}
-                        title={title}
-                    />
+                    >
+                        {/* Fallback content when PDF cannot be displayed */}
+                        <div className="w-[800px] h-[90vh] flex flex-col items-center justify-center bg-gray-100 p-8">
+                            <FileText size={64} className="text-gray-400 mb-4" />
+                            <p className="text-gray-600 text-lg mb-2">Cannot preview PDF in browser</p>
+                            <p className="text-gray-500 text-sm mb-6">Download the file to view it</p>
+                            {onDownload && (
+                                <button
+                                    onClick={onDownload}
+                                    className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
+                                >
+                                    <Download size={20} />
+                                    Download PDF
+                                </button>
+                            )}
+                        </div>
+                    </object>
                 </div>
             </div>
 

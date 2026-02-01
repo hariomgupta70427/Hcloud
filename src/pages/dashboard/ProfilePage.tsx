@@ -7,7 +7,7 @@ import { ProfileCard, ProfileEditForm, StorageInfo } from '@/components/profile'
 
 export default function ProfilePage() {
     const navigate = useNavigate();
-    const { user } = useAuthStore();
+    const { user, updateProfile } = useAuthStore();
     const [showEditForm, setShowEditForm] = useState(false);
 
     if (!user) {
@@ -15,9 +15,7 @@ export default function ProfilePage() {
     }
 
     const handleSaveProfile = async (data: { name: string; phone?: string; avatar?: string }) => {
-        // In a real app, this would call an API
-        console.log('Saving profile:', data);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await updateProfile(data);
     };
 
     return (

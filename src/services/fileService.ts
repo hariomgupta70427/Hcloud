@@ -95,6 +95,33 @@ export async function getUserFiles(userId: string): Promise<FileItem[]> {
     return snapshot.docs.map((doc) => docToFileItem(doc.id, doc.data()));
 }
 
+// Search all files by name (global search)
+export async function searchFiles(userId: string, searchTerm: string): Promise<FileItem[]> {
+    // Firestore doesn't support full-text search, so we fetch all files and filter client-side
+    const allFiles = await getUserFiles(userId);
+    const term = searchTerm.toLowerCase();
+
+    return allFiles.filter(file =>
+        file.name.toLowerCase().includes(term) &&
+        !file.isDeleted
+    );
+}
+
+// Get all folders for a user (for MoveDialog)
+export async function getAllFolders(userId: string): Promise<FileItem[]> {
+    const q = query(
+        filesCollection,
+        where('userId', '==', userId),
+        where('type', '==', 'folder')
+    );
+
+    const snapshot = await getDocs(q);
+    return snapshot.docs
+        .map((doc) => docToFileItem(doc.id, doc.data()))
+        .filter((folder) => !folder.isDeleted)
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // Get files in a specific folder (excluding deleted)
 export async function getFilesInFolder(
     userId: string,

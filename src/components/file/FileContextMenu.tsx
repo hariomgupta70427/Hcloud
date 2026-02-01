@@ -68,9 +68,17 @@ export function FileContextMenu({
     ];
 
     // Adjust position to keep menu in viewport
+    const menuWidth = 208; // w-52 = 13rem = 208px
+    const menuHeight = 400; // Approximate menu height
+
+    // Check if menu would overflow right edge
+    const overflowsRight = position.x + menuWidth > window.innerWidth - 10;
+    // Check if menu would overflow bottom
+    const overflowsBottom = position.y + menuHeight > window.innerHeight - 10;
+
     const adjustedPosition = {
-        x: Math.min(position.x, window.innerWidth - 220),
-        y: Math.min(position.y, window.innerHeight - 400),
+        x: overflowsRight ? Math.max(10, position.x - menuWidth) : position.x,
+        y: overflowsBottom ? Math.max(10, window.innerHeight - menuHeight - 10) : position.y,
     };
 
     return (
@@ -104,8 +112,8 @@ export function FileContextMenu({
                                         onClose();
                                     }}
                                     className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${item.danger
-                                            ? 'text-destructive hover:bg-destructive/10'
-                                            : 'text-foreground hover:bg-muted'
+                                        ? 'text-destructive hover:bg-destructive/10'
+                                        : 'text-foreground hover:bg-muted'
                                         }`}
                                 >
                                     <item.icon size={16} className="flex-shrink-0" />

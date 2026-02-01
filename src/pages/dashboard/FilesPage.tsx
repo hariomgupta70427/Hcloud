@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle, Loader2, CheckCircle, X } from 'lucide-react';
+import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { FileCard } from '@/components/file/FileCard';
 import { FileRow } from '@/components/file/FileRow';
-import { UploadZone } from '@/components/file/UploadZone';
+import { UploadModal } from '@/components/file/UploadModal';
 import { FolderBreadcrumb } from '@/components/file/FolderBreadcrumb';
 import { NewFolderDialog } from '@/components/file/NewFolderDialog';
 import { RenameDialog } from '@/components/file/RenameDialog';
@@ -58,17 +58,56 @@ export default function FilesPage() {
   // Preview state
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [searchResults, setSearchResults] = useState<FileItem[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [allFolders, setAllFolders] = useState<FileItem[]>([]);
 
   // Load files on mount and when folder changes
   useEffect(() => {
-    if (user?.id) {
+    if (user?.id && !searchQuery) {
       loadFiles(user.id, currentFolder);
+      setSearchResults([]); // Clear search results when navigating
     }
-  }, [user?.id, currentFolder, loadFiles]);
+  }, [user?.id, currentFolder, loadFiles, searchQuery]);
 
-  // Filter files by search query
-  const filteredFiles = files
-    .filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
+  // Load all folders for MoveDialog
+  useEffect(() => {
+    if (user?.id) {
+      fileService.getAllFolders(user.id).then(setAllFolders).catch(console.error);
+    }
+  }, [user?.id, currentFolder, loadFiles, searchQuery]);
+
+  // Global search when searchQuery changes
+  useEffect(() => {
+    if (!user?.id || !searchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    const performSearch = async () => {
+      setIsSearching(true);
+      try {
+        const results = await fileService.searchFiles(user.id, searchQuery.trim());
+        setSearchResults(results);
+      } catch (error) {
+        console.error('Search failed:', error);
+        toast.error('Search failed');
+      } finally {
+        setIsSearching(false);
+      }
+    };
+
+    // Debounce search
+    const timeoutId = setTimeout(performSearch, 300);
+    return () => clearTimeout(timeoutId);
+  }, [user?.id, searchQuery]);
+
+  // Use search results when searching, otherwise use folder files
+  const displayFiles = searchQuery.trim() ? searchResults : files;
+
+  // Sort display files
+  const filteredFiles = displayFiles
     .sort((a, b) => {
       // Folders first
       if (a.type === 'folder' && b.type !== 'folder') return -1;
@@ -293,114 +332,14 @@ export default function FilesPage() {
       </AnimatePresence>
 
       {/* Upload Modal */}
-      <AnimatePresence>
-        {showUpload && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100]"
-              onClick={() => !isUploading && setShowUpload(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              style={{
-                position: 'fixed',
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
-                zIndex: 101,
-                width: '90%',
-                maxWidth: '500px',
-                maxHeight: '80vh',
-                overflow: 'auto',
-              }}
-              className="p-6 rounded-2xl bg-card border border-border shadow-2xl"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-foreground">Upload Files</h2>
-                <button
-                  onClick={() => !isUploading && setShowUpload(false)}
-                  className="p-2 rounded-lg hover:bg-muted transition-colors"
-                  disabled={isUploading}
-                >
-                  <X size={20} className="text-muted-foreground" />
-                </button>
-              </div>
-
-              <UploadZone onFilesSelected={handleFilesSelected} />
-
-              {/* Upload Progress */}
-              {uploadingFiles.length > 0 && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  className="mt-4 space-y-2 max-h-48 overflow-y-auto"
-                >
-                  {uploadingFiles.map((item, index) => (
-                    <div
-                      key={`${item.file.name}-${index}`}
-                      className="flex items-center gap-3 p-3 rounded-lg bg-muted/50"
-                    >
-                      {item.status === 'uploading' && (
-                        <Loader2 className="w-4 h-4 text-primary animate-spin" />
-                      )}
-                      {item.status === 'success' && (
-                        <CheckCircle className="w-4 h-4 text-green-500" />
-                      )}
-                      {item.status === 'error' && (
-                        <AlertCircle className="w-4 h-4 text-red-500" />
-                      )}
-                      {item.status === 'pending' && (
-                        <div className="w-4 h-4 rounded-full border-2 border-muted-foreground" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{item.file.name}</p>
-                        {item.status === 'uploading' && (
-                          <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                            <motion.div
-                              className="h-full bg-primary rounded-full"
-                              initial={{ width: 0 }}
-                              animate={{ width: `${item.progress}%` }}
-                            />
-                          </div>
-                        )}
-                        {item.status === 'error' && (
-                          <p className="text-xs text-red-500">{item.error}</p>
-                        )}
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {item.status === 'uploading' ? `${item.progress}%` : ''}
-                      </span>
-                    </div>
-                  ))}
-                </motion.div>
-              )}
-
-              <div className="mt-4 flex justify-end gap-2">
-                {uploadingFiles.some(f => f.status === 'success' || f.status === 'error') && (
-                  <button
-                    onClick={clearCompleted}
-                    className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    Clear Completed
-                  </button>
-                )}
-                <button
-                  onClick={() => setShowUpload(false)}
-                  disabled={isUploading}
-                  className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-                >
-                  {isUploading ? 'Uploading...' : 'Close'}
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      <UploadModal
+        isOpen={showUpload}
+        onClose={() => setShowUpload(false)}
+        onFilesSelected={handleFilesSelected}
+        uploadingFiles={uploadingFiles}
+        isUploading={isUploading}
+        onClearCompleted={clearCompleted}
+      />
 
       {/* Loading State */}
       {isLoading ? (
@@ -532,7 +471,7 @@ export default function FilesPage() {
           isOpen={!!moveFile}
           fileName={moveFile.name}
           currentFolderId={moveFile.parentId || undefined}
-          folders={files.filter(f => f.type === 'folder' && f.id !== moveFile.id).map(f => ({
+          folders={allFolders.filter(f => f.id !== moveFile.id).map(f => ({
             id: f.id,
             name: f.name,
             parentId: f.parentId || undefined,

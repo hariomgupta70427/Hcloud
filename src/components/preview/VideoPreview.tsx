@@ -167,13 +167,14 @@ export function VideoPreview({
             </motion.div>
 
             {/* Video container */}
-            <div className="relative w-full max-w-5xl mx-4">
+            <div className="relative w-full max-w-[90vw] max-h-[80vh] mx-4 flex items-center justify-center">
                 <video
                     ref={videoRef}
                     src={src}
                     poster={poster}
-                    className="w-full rounded-lg"
+                    className="max-w-full max-h-[80vh] rounded-lg object-contain"
                     onClick={togglePlay}
+                    style={{ aspectRatio: 'auto' }}
                 />
 
                 {/* Play overlay */}
