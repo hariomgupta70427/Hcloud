@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle } from 'lucide-react';
+import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle, Search } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -42,7 +42,7 @@ export default function FilesPage() {
     moveItem,
     shareItem,
   } = useFileStore();
-  const { viewMode, searchQuery } = useUIStore();
+  const { viewMode, searchQuery, setSearchQuery } = useUIStore();
   const { uploadFiles, uploadingFiles, isUploading, clearCompleted } = useUpload();
 
   const [showUpload, setShowUpload] = useState(false);
@@ -341,18 +341,63 @@ export default function FilesPage() {
         onClearCompleted={clearCompleted}
       />
 
+      {/* Search indicator */}
+      {searchQuery.trim() && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-3 rounded-lg bg-primary/10 border border-primary/20 flex items-center gap-2 text-sm text-primary"
+        >
+          <Search size={16} />
+          <span>
+            {isSearching
+              ? 'Searching...'
+              : `Found ${filteredFiles.length} result${filteredFiles.length !== 1 ? 's' : ''} for "${searchQuery}"`
+            }
+          </span>
+          <button
+            onClick={() => setSearchQuery('')}
+            className="ml-auto text-xs underline hover:no-underline"
+          >
+            Clear search
+          </button>
+        </motion.div>
+      )}
+
       {/* Loading State */}
-      {isLoading ? (
+      {isLoading || isSearching ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {Array.from({ length: 12 }).map((_, i) => (
             <FileCardSkeleton key={i} />
           ))}
         </div>
       ) : filteredFiles.length === 0 ? (
-        <EmptyState
-          type={currentFolder ? 'folder' : 'files'}
-          onAction={() => setShowUpload(true)}
-        />
+        searchQuery.trim() ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex flex-col items-center justify-center py-16 text-center"
+          >
+            <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
+              <Search size={32} className="text-muted-foreground" />
+            </div>
+            <h3 className="text-lg font-medium text-foreground mb-2">No files found</h3>
+            <p className="text-muted-foreground text-sm mb-4">
+              No files or folders match "{searchQuery}"
+            </p>
+            <button
+              onClick={() => setSearchQuery('')}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+            >
+              Clear Search
+            </button>
+          </motion.div>
+        ) : (
+          <EmptyState
+            type={currentFolder ? 'folder' : 'files'}
+            onAction={() => setShowUpload(true)}
+          />
+        )
       ) : viewMode === 'grid' ? (
         <motion.div
           layout

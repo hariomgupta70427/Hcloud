@@ -86,13 +86,18 @@ function docToFileItem(docId: string, data: any): FileItem {
 export async function getUserFiles(userId: string): Promise<FileItem[]> {
     const q = query(
         filesCollection,
-        where('userId', '==', userId),
-        orderBy('type', 'desc'), // Folders first
-        orderBy('name', 'asc')
+        where('userId', '==', userId)
     );
 
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((doc) => docToFileItem(doc.id, doc.data()));
+    return snapshot.docs
+        .map((doc) => docToFileItem(doc.id, doc.data()))
+        .sort((a, b) => {
+            // Folders first
+            if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+            // Then by name
+            return a.name.localeCompare(b.name);
+        });
 }
 
 // Search all files by name (global search)

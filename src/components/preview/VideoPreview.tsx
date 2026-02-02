@@ -29,6 +29,7 @@ export function VideoPreview({
     onDownload,
 }: VideoPreviewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const progressRef = useRef<HTMLDivElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
@@ -93,8 +94,11 @@ export function VideoPreview({
     };
 
     const toggleFullscreen = async () => {
+        const container = containerRef.current;
+        if (!container) return;
+
         if (!document.fullscreenElement) {
-            await videoRef.current?.parentElement?.requestFullscreen();
+            await container.requestFullscreen();
             setIsFullscreen(true);
         } else {
             await document.exitFullscreen();
@@ -138,43 +142,45 @@ export function VideoPreview({
         }, 3000);
     };
 
+    // Always show controls on mobile/touch devices
+    const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+    const controlsVisible = isMobile || showControls;
+
     return (
         <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/95"
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black"
             onClick={(e) => e.target === e.currentTarget && onClose()}
             onMouseMove={handleMouseMove}
         >
-            {/* Close button */}
-            <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: showControls ? 1 : 0 }}
+            {/* Close button - always visible */}
+            <button
                 onClick={onClose}
-                className="absolute top-4 right-4 p-3 rounded-xl bg-black/50 hover:bg-black/70 text-white transition-colors z-10"
+                className="absolute top-4 right-4 p-3 rounded-xl bg-black/70 hover:bg-black/90 text-white transition-colors z-20"
             >
                 <X size={24} />
-            </motion.button>
+            </button>
 
-            {/* Title */}
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: showControls ? 1 : 0 }}
-                className="absolute top-4 left-4 text-white font-medium z-10"
-            >
+            {/* Title - always visible */}
+            <div className="absolute top-4 left-4 text-white font-medium z-20 bg-black/50 px-3 py-2 rounded-lg">
                 {title}
-            </motion.div>
+            </div>
 
             {/* Video container */}
-            <div className="relative w-full max-w-[90vw] max-h-[80vh] mx-4 flex items-center justify-center">
+            <div
+                ref={containerRef}
+                className="relative w-full h-full flex flex-col items-center justify-center"
+            >
                 <video
                     ref={videoRef}
                     src={src}
                     poster={poster}
-                    className="max-w-full max-h-[80vh] rounded-lg object-contain"
+                    className="max-w-full max-h-[calc(100vh-120px)] w-auto h-auto"
                     onClick={togglePlay}
-                    style={{ aspectRatio: 'auto' }}
+                    playsInline
+                    style={{ objectFit: 'contain' }}
                 />
 
                 {/* Play overlay */}
@@ -184,59 +190,58 @@ export function VideoPreview({
                         animate={{ scale: 1, opacity: 1 }}
                         exit={{ scale: 0.8, opacity: 0 }}
                         onClick={togglePlay}
-                        className="absolute inset-0 flex items-center justify-center"
+                        className="absolute inset-0 flex items-center justify-center pointer-events-none"
                     >
-                        <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center hover:bg-white/30 transition-colors">
+                        <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center pointer-events-auto hover:bg-white/30 transition-colors">
                             <Play size={36} className="text-white ml-1" fill="white" />
                         </div>
                     </motion.button>
                 )}
 
-                {/* Controls */}
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: showControls ? 1 : 0, y: showControls ? 0 : 20 }}
-                    className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg"
+                {/* Controls Bar - Fixed at bottom, always visible on mobile */}
+                <div
+                    className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/80 to-transparent pt-16 pb-4 px-4 transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0'
+                        }`}
                 >
                     {/* Progress bar */}
                     <div
                         ref={progressRef}
                         onClick={handleProgressClick}
-                        className="h-1 bg-white/30 rounded-full mb-4 cursor-pointer group"
+                        className="h-2 bg-white/30 rounded-full mb-4 cursor-pointer group"
                     >
                         <div
                             className="h-full bg-primary rounded-full relative"
-                            style={{ width: `${(currentTime / duration) * 100}%` }}
+                            style={{ width: `${(currentTime / duration) * 100 || 0}%` }}
                         >
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg" />
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 sm:gap-4 flex-wrap justify-center sm:justify-start">
                         {/* Play/Pause */}
-                        <button onClick={togglePlay} className="text-white hover:text-primary transition-colors">
-                            {isPlaying ? <Pause size={24} /> : <Play size={24} />}
+                        <button onClick={togglePlay} className="text-white hover:text-primary transition-colors p-2">
+                            {isPlaying ? <Pause size={28} /> : <Play size={28} />}
                         </button>
 
-                        {/* Skip buttons */}
-                        <button onClick={() => skip(-10)} className="text-white hover:text-primary transition-colors">
-                            <SkipBack size={20} />
+                        {/* Skip buttons - hidden on very small screens */}
+                        <button onClick={() => skip(-10)} className="text-white hover:text-primary transition-colors p-2 hidden sm:block">
+                            <SkipBack size={24} />
                         </button>
-                        <button onClick={() => skip(10)} className="text-white hover:text-primary transition-colors">
-                            <SkipForward size={20} />
+                        <button onClick={() => skip(10)} className="text-white hover:text-primary transition-colors p-2 hidden sm:block">
+                            <SkipForward size={24} />
                         </button>
 
                         {/* Time */}
-                        <div className="text-white text-sm">
-                            {formatTime(currentTime)} / {formatTime(duration)}
+                        <div className="text-white text-sm font-medium">
+                            {formatTime(currentTime)} / {formatTime(duration || 0)}
                         </div>
 
                         <div className="flex-1" />
 
-                        {/* Volume */}
-                        <div className="flex items-center gap-2 group">
-                            <button onClick={toggleMute} className="text-white hover:text-primary transition-colors">
-                                {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                        {/* Volume - hidden on mobile */}
+                        <div className="hidden sm:flex items-center gap-2">
+                            <button onClick={toggleMute} className="text-white hover:text-primary transition-colors p-2">
+                                {isMuted || volume === 0 ? <VolumeX size={24} /> : <Volume2 size={24} />}
                             </button>
                             <input
                                 type="range"
@@ -245,23 +250,23 @@ export function VideoPreview({
                                 step="0.1"
                                 value={isMuted ? 0 : volume}
                                 onChange={handleVolumeChange}
-                                className="w-20 accent-primary opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="w-24 accent-primary"
                             />
                         </div>
 
                         {/* Download */}
                         {onDownload && (
-                            <button onClick={onDownload} className="text-white hover:text-primary transition-colors">
-                                <Download size={20} />
+                            <button onClick={onDownload} className="text-white hover:text-primary transition-colors p-2">
+                                <Download size={24} />
                             </button>
                         )}
 
                         {/* Fullscreen */}
-                        <button onClick={toggleFullscreen} className="text-white hover:text-primary transition-colors">
-                            {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
+                        <button onClick={toggleFullscreen} className="text-white hover:text-primary transition-colors p-2">
+                            {isFullscreen ? <Minimize size={24} /> : <Maximize size={24} />}
                         </button>
                     </div>
-                </motion.div>
+                </div>
             </div>
         </motion.div>
     );
