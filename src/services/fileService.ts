@@ -248,6 +248,10 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         updatedAt: serverTimestamp(),
     };
 
+    if (data.thumbnail) {
+        fileData.thumbnail = data.thumbnail;
+    }
+
     // Only add thumbnail if it exists (Firestore doesn't allow undefined)
     if (data.thumbnail) {
         fileData.thumbnail = data.thumbnail;

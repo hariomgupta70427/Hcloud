@@ -4,8 +4,9 @@ import { VideoPreview } from './VideoPreview';
 import { AudioPreview } from './AudioPreview';
 import { PDFPreview } from './PDFPreview';
 import { CodePreview } from './CodePreview';
+import { OfficePreview } from './OfficePreview';
 
-export type PreviewType = 'image' | 'video' | 'audio' | 'pdf' | 'code' | 'unknown';
+export type PreviewType = 'image' | 'video' | 'audio' | 'pdf' | 'office' | 'code' | 'unknown';
 
 export interface PreviewFile {
     id: string;
@@ -49,7 +50,17 @@ export function getPreviewType(filename: string, mimeType?: string): PreviewType
 
     // PDF
     if (ext === 'pdf' || mimeType === 'application/pdf') {
-        return 'pdf';
+        return 'office';
+    }
+
+    // Office Documents
+    const officeExts = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+    if (officeExts.includes(ext) ||
+        mimeType?.includes('msword') ||
+        mimeType?.includes('office') ||
+        mimeType?.includes('spreadsheet') ||
+        mimeType?.includes('presentation')) {
+        return 'office';
     }
 
     // Code/text types
@@ -124,6 +135,15 @@ export function PreviewModal({
 
                     {file.type === 'pdf' && (
                         <PDFPreview
+                            src={file.url}
+                            title={file.name}
+                            onClose={onClose}
+                            onDownload={handleDownload}
+                        />
+                    )}
+
+                    {file.type === 'office' && (
+                        <OfficePreview
                             src={file.url}
                             title={file.name}
                             onClose={onClose}

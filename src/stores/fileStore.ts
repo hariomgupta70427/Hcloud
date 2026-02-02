@@ -34,6 +34,8 @@ interface FileState {
   renameItem: (id: string, newName: string) => Promise<void>;
   moveItem: (id: string, targetFolderId: string | null) => Promise<void>;
   deleteItem: (id: string) => Promise<void>;
+  restoreItem: (id: string) => Promise<void>;
+  permanentDeleteItem: (id: string) => Promise<void>;
   shareItem: (id: string, settings: { password?: string; expiresAt?: Date }) => Promise<string>;
   setLoading: (loading: boolean) => void;
   setUploadProgress: (fileId: string, progress: number) => void;
@@ -247,6 +249,31 @@ export const useFileStore = create<FileState>((set, get) => ({
       }));
     } catch (error) {
       console.error('Error deleting item:', error);
+      throw error;
+    }
+  },
+
+  restoreItem: async (id) => {
+    try {
+      await fileService.restoreFromTrash(id);
+      set((state) => ({
+        files: state.files.filter((f) => f.id !== id), // Remove from trash view
+      }));
+    } catch (error) {
+      console.error('Error restoring item:', error);
+      throw error;
+    }
+  },
+
+  permanentDeleteItem: async (id) => {
+    try {
+      await fileService.deleteItem(id); // Hard delete
+      set((state) => ({
+        files: state.files.filter((f) => f.id !== id),
+        selectedFiles: state.selectedFiles.filter((fid) => fid !== id),
+      }));
+    } catch (error) {
+      console.error('Error permanently deleting item:', error);
       throw error;
     }
   },

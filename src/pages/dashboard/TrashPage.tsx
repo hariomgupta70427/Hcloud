@@ -1,9 +1,37 @@
 import { motion } from 'framer-motion';
-import { Trash2, RotateCcw, Trash } from 'lucide-react';
-import { useState } from 'react';
+import { Trash2, RotateCcw, Trash, Folder, FileText } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useFileStore } from '@/stores/fileStore';
+import { useAuthStore } from '@/stores/authStore';
+import { toast } from 'sonner';
 
 export default function TrashPage() {
-  const [trashedFiles] = useState<any[]>([]);
+  const { user } = useAuthStore();
+  const {
+    files: trashedFiles,
+    loadTrashFiles,
+    restoreItem,
+    permanentDeleteItem,
+    isLoading
+  } = useFileStore();
+
+  useEffect(() => {
+    if (user?.id) {
+      loadTrashFiles(user.id);
+    }
+  }, [user?.id, loadTrashFiles]);
+
+  const handleRestore = async (id: string) => {
+    await restoreItem(id);
+    toast.success('File restored');
+  };
+
+  const handleDelete = async (id: string) => {
+    if (window.confirm('Are you sure you want to permanently delete this item? This cannot be undone.')) {
+      await permanentDeleteItem(id);
+      toast.success('File deleted permanently');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -14,16 +42,23 @@ export default function TrashPage() {
             Items in trash are automatically deleted after 30 days
           </p>
         </div>
-        
+
         {trashedFiles.length > 0 && (
-          <button className="flex items-center gap-2 px-4 py-2 rounded-xl text-destructive hover:bg-destructive/10 transition-colors">
+          <button
+            onClick={() => toast.info('Bulk delete coming soon')}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-destructive hover:bg-destructive/10 transition-colors"
+          >
             <Trash size={18} />
             Empty Trash
           </button>
         )}
       </div>
 
-      {trashedFiles.length === 0 ? (
+      {isLoading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : trashedFiles.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -48,13 +83,26 @@ export default function TrashPage() {
             <tbody>
               {trashedFiles.map((file) => (
                 <tr key={file.id} className="border-b border-border/50 hover:bg-muted/30">
-                  <td className="py-3 px-4 text-foreground">{file.name}</td>
-                  <td className="py-3 px-4 text-muted-foreground">{file.deletedAt}</td>
+                  <td className="py-3 px-4 text-foreground flex items-center gap-2">
+                    {file.type === 'folder' ? <Folder size={16} className="text-primary" /> : <FileText size={16} className="text-muted-foreground" />}
+                    {file.name}
+                  </td>
+                  <td className="py-3 px-4 text-muted-foreground">
+                    {file.deletedAt ? new Date(file.deletedAt).toLocaleDateString() : '-'}
+                  </td>
                   <td className="py-3 px-4 text-right">
-                    <button className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                    <button
+                      onClick={() => handleRestore(file.id)}
+                      title="Restore"
+                      className="p-1.5 rounded-lg text-muted-foreground hover:text-green-600 hover:bg-green-500/10 transition-colors"
+                    >
                       <RotateCcw size={16} />
                     </button>
-                    <button className="p-1.5 rounded-lg text-destructive hover:bg-destructive/10 transition-colors ml-1">
+                    <button
+                      onClick={() => handleDelete(file.id)}
+                      title="Delete Permanently"
+                      className="p-1.5 rounded-lg text-destructive hover:bg-destructive/10 transition-colors ml-1"
+                    >
                       <Trash2 size={16} />
                     </button>
                   </td>

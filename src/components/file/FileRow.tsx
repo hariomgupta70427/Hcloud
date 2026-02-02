@@ -1,5 +1,11 @@
 import { motion } from 'framer-motion';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Folder,
   FileText,
   Image,
@@ -28,6 +34,8 @@ interface FileRowProps {
   onDelete: () => void;
   onDownload?: () => void;
   onShare?: () => void;
+  onRename?: () => void;
+  onMove?: () => void;
 }
 
 const getFileIcon = (file: FileItem) => {
@@ -82,7 +90,9 @@ export function FileRow({
   onStar,
   onDelete,
   onDownload,
-  onShare
+  onShare,
+  onRename,
+  onMove,
 }: FileRowProps) {
   const [showMenu, setShowMenu] = useState(false);
   const Icon = getFileIcon(file);
@@ -172,54 +182,56 @@ export function FileRow({
           </button>
 
           <div className="relative">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowMenu(!showMenu);
-              }}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            >
-              <MoreVertical size={16} />
-            </button>
-
-            {showMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  onClick={(e) => e.stopPropagation()}
+                  className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus:outline-none"
+                >
+                  <MoreVertical size={16} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuItem
                   onClick={(e) => {
                     e.stopPropagation();
-                    setShowMenu(false);
+                    onRename?.();
                   }}
-                />
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="absolute right-0 top-8 w-40 py-1 rounded-lg bg-popover border border-border shadow-lg z-50"
                 >
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowMenu(false);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
-                  >
-                    <Edit3 size={14} />
-                    Rename
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete();
-                      setShowMenu(false);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
-                  >
-                    <Trash2 size={14} />
-                    Delete
-                  </button>
-                </motion.div>
-              </>
-            )}
+                  <Edit3 size={14} className="mr-2" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMove?.();
+                  }}
+                >
+                  <Folder size={14} className="mr-2" />
+                  Move
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onShare?.();
+                  }}
+                >
+                  <Share2 size={14} className="mr-2" />
+                  Share
+                </DropdownMenuItem>
+                <div className="h-px bg-border my-1" />
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                >
+                  <Trash2 size={14} className="mr-2" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </td>

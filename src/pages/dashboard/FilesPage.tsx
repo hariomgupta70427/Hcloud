@@ -151,6 +151,31 @@ export default function FilesPage() {
     }
   };
 
+  const handleDownloadContext = async (file: FileItem) => {
+    // Only download files, not folders
+    if (file.type === 'folder' || !file.telegramFileId) return;
+
+    const toastId = toast.loading(`Preparing download: ${file.name}`);
+    try {
+      const result = await getFileFromTelegram(file.telegramFileId);
+      if (result.success && result.downloadUrl) {
+        const link = document.createElement('a');
+        link.href = result.downloadUrl;
+        link.download = file.name;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        toast.dismiss(toastId);
+        toast.success('Download started');
+      } else {
+        toast.error('Failed to get download link', { id: toastId });
+      }
+    } catch (e) {
+      toast.error('Download failed', { id: toastId });
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteFile) return;
     try {
@@ -416,6 +441,7 @@ export default function FilesPage() {
                 onRename={() => setRenameFile(file)}
                 onShare={() => setShareFile(file)}
                 onMove={() => setMoveFile(file)}
+                onDownload={() => handleDownloadContext(file)}
               />
             ))}
           </AnimatePresence>
@@ -442,6 +468,10 @@ export default function FilesPage() {
                     onClick={() => handleFileClick(file)}
                     onStar={() => toggleStar(file.id)}
                     onDelete={() => setDeleteFile(file)}
+                    onRename={() => setRenameFile(file)}
+                    onShare={() => setShareFile(file)}
+                    onMove={() => setMoveFile(file)}
+                    onDownload={() => handleDownloadContext(file)}
                   />
                 ))}
               </AnimatePresence>

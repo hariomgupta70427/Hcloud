@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useUIStore } from '@/stores/uiStore';
 import { NewFolderDialog } from '@/components/file/NewFolderDialog';
 import { UploadModal } from '@/components/file/UploadModal';
 import { useUpload } from '@/hooks/useUpload';
@@ -27,6 +28,14 @@ export default function DashboardPage() {
   const { uploadFiles, uploadingFiles, isUploading, clearCompleted } = useUpload();
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const { searchQuery } = useUIStore();
+
+  // Navigate to files page on search
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      navigate('/dashboard/files');
+    }
+  }, [searchQuery, navigate]);
 
   const recentFiles = files
     .filter(f => f.type === 'file')

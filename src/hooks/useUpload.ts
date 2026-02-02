@@ -56,6 +56,42 @@ export function useUpload(): UseUploadReturn {
         return result;
     }, [updateFile]);
 
+    // Generate thumbnail for images
+    const createThumbnail = async (file: File): Promise<string | undefined> => {
+        if (!file.type.startsWith('image/')) return undefined;
+
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                // Max dimensions 128x128
+                const maxSize = 128;
+                let width = img.width;
+                let height = img.height;
+
+                if (width > height) {
+                    if (width > maxSize) {
+                        height *= maxSize / width;
+                        width = maxSize;
+                    }
+                } else {
+                    if (height > maxSize) {
+                        width *= maxSize / height;
+                        height = maxSize;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                ctx?.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', 0.7));
+            };
+            img.onerror = () => resolve(undefined);
+            img.src = URL.createObjectURL(file);
+        });
+    };
+
     const uploadFiles = useCallback(async (files: File[]) => {
         console.log('[useUpload] uploadFiles called with', files.length, 'files');
 
@@ -64,8 +100,6 @@ export function useUpload(): UseUploadReturn {
             toast.error('Please sign in to upload files');
             return;
         }
-
-        console.log('[useUpload] User:', user.id);
 
         // Initialize all files as pending
         const newFiles: UploadingFile[] = files.map(file => ({
@@ -77,7 +111,7 @@ export function useUpload(): UseUploadReturn {
         setUploadingFiles(prev => [...prev, ...newFiles]);
         const startIndex = uploadingFiles.length;
 
-        // Upload each file sequentially (Telegram has rate limits)
+        // Upload each file sequentially
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const index = startIndex + i;
@@ -85,32 +119,25 @@ export function useUpload(): UseUploadReturn {
             try {
                 const result = await uploadSingleFile(file, index);
 
+                // Generate thumbnail if image
+                let thumbnail: string | undefined;
+                try {
+                    thumbnail = await createThumbnail(file);
+                } catch (e) {
+                    console.warn('Thumbnail generation failed', e);
+                }
+
                 if (result.success && result.fileId) {
-                    // Save file metadata to Firestore
-                    console.log('[useUpload] Telegram upload success, saving to Firestore...');
-                    console.log('[useUpload] File data:', {
+                    // Save to Firestore with thumbnail
+                    await addFileRecord({
                         name: file.name,
-                        mimeType: file.type,
+                        mimeType: file.type || 'application/octet-stream',
                         size: file.size,
                         telegramFileId: result.fileId,
                         parentId: currentFolder,
                         userId: user.id,
+                        thumbnail: thumbnail
                     });
-
-                    try {
-                        await addFileRecord({
-                            name: file.name,
-                            mimeType: file.type || 'application/octet-stream',
-                            size: file.size,
-                            telegramFileId: result.fileId,
-                            parentId: currentFolder,
-                            userId: user.id,
-                        });
-                        console.log('[useUpload] Firestore save successful for:', file.name);
-                    } catch (firestoreError: any) {
-                        console.error('[useUpload] Firestore save failed:', firestoreError);
-                        throw firestoreError;
-                    }
 
                     updateFile(index, {
                         status: 'success',
@@ -124,7 +151,6 @@ export function useUpload(): UseUploadReturn {
                         status: 'error',
                         error: result.error || 'Upload failed',
                     });
-
                     toast.error(`Failed to upload ${file.name}: ${result.error}`);
                 }
             } catch (error: any) {
@@ -132,7 +158,6 @@ export function useUpload(): UseUploadReturn {
                     status: 'error',
                     error: error.message || 'Upload failed',
                 });
-
                 toast.error(`Failed to upload ${file.name}`);
             }
         }
