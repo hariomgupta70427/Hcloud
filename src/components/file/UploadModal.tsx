@@ -42,8 +42,8 @@ export function UploadModal({
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 flex items-center justify-center p-4 !m-0 !inset-0"
-                        style={{ zIndex: 99999, pointerEvents: 'none' }}
+                        className="fixed inset-0 z-[99999] flex items-center justify-center p-4"
+                        style={{ pointerEvents: 'none' }}
                     >
                         {/* Modal Content */}
                         <motion.div

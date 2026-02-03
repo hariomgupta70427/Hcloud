@@ -92,6 +92,56 @@ export function useUpload(): UseUploadReturn {
         });
     };
 
+    // Generate thumbnail for videos
+    const createVideoThumbnail = async (file: File): Promise<string | undefined> => {
+        if (!file.type.startsWith('video/')) return undefined;
+
+        return new Promise((resolve) => {
+            const video = document.createElement('video');
+            video.preload = 'metadata';
+            video.muted = true;
+            video.playsInline = true;
+
+            video.onloadedmetadata = () => {
+                video.currentTime = 1; // Seek to 1s
+            };
+
+            video.onseeked = () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    // Max dimensions 320x180 (16:9ish)
+                    const maxSize = 320;
+                    let width = video.videoWidth;
+                    let height = video.videoHeight;
+                    const aspect = width / height;
+
+                    if (width > maxSize) {
+                        width = maxSize;
+                        height = width / aspect;
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    ctx?.drawImage(video, 0, 0, width, height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.7));
+                } catch (e) {
+                    console.warn('Video thumbnail capture failed', e);
+                    resolve(undefined);
+                } finally {
+                    video.remove();
+                }
+            };
+
+            video.onerror = () => {
+                video.remove();
+                resolve(undefined);
+            };
+
+            video.src = URL.createObjectURL(file);
+        });
+    };
+
     const uploadFiles = useCallback(async (files: File[]) => {
         console.log('[useUpload] uploadFiles called with', files.length, 'files');
 
@@ -119,10 +169,14 @@ export function useUpload(): UseUploadReturn {
             try {
                 const result = await uploadSingleFile(file, index);
 
-                // Generate thumbnail if image
+                // Generate thumbnail
                 let thumbnail: string | undefined;
                 try {
-                    thumbnail = await createThumbnail(file);
+                    if (file.type.startsWith('image/')) {
+                        thumbnail = await createThumbnail(file);
+                    } else if (file.type.startsWith('video/')) {
+                        thumbnail = await createVideoThumbnail(file);
+                    }
                 } catch (e) {
                     console.warn('Thumbnail generation failed', e);
                 }

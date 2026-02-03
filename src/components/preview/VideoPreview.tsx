@@ -200,7 +200,7 @@ export function VideoPreview({
 
                 {/* Controls Bar - Fixed at bottom, always visible on mobile */}
                 <div
-                    className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/80 to-transparent pt-16 pb-4 px-4 transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0'
+                    className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/80 to-transparent pt-16 pb-4 px-4 transition-opacity duration-300 z-[100000] ${controlsVisible ? 'opacity-100' : 'opacity-0'
                         }`}
                 >
                     {/* Progress bar */}
