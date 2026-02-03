@@ -20,6 +20,12 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 
+export interface BYODConfig {
+  telegramSession: string;
+  telegramUserId: string;
+  verified: boolean;
+}
+
 export interface UserData {
   id: string;
   name: string;
@@ -27,6 +33,7 @@ export interface UserData {
   phone?: string;
   avatar?: string;
   storageMode: 'managed' | 'byod';
+  byodConfig?: BYODConfig;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -37,11 +44,12 @@ export interface RegisterData {
   password: string;
   phone?: string;
   storageMode: 'managed' | 'byod';
+  byodConfig?: BYODConfig;
 }
 
 // Sign up with email and password
 export async function signUp(data: RegisterData): Promise<UserData> {
-  const { email, password, name, phone, storageMode } = data;
+  const { email, password, name, phone, storageMode, byodConfig } = data;
 
   // Create auth user
   const userCredential: UserCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -51,7 +59,7 @@ export async function signUp(data: RegisterData): Promise<UserData> {
   await firebaseUpdateProfile(user, { displayName: name });
 
   // Create user document in Firestore
-  const userData = {
+  const userData: Record<string, any> = {
     name,
     email,
     phone: phone || '',
@@ -61,6 +69,15 @@ export async function signUp(data: RegisterData): Promise<UserData> {
     updatedAt: serverTimestamp(),
   };
 
+  // Add BYOD config if provided
+  if (storageMode === 'byod' && byodConfig) {
+    userData.byodConfig = {
+      telegramSession: byodConfig.telegramSession,
+      telegramUserId: byodConfig.telegramUserId,
+      verified: byodConfig.verified,
+    };
+  }
+
   await setDoc(doc(db, 'users', user.uid), userData);
 
   return {
@@ -69,6 +86,7 @@ export async function signUp(data: RegisterData): Promise<UserData> {
     email,
     phone,
     storageMode,
+    byodConfig,
   };
 }
 
@@ -194,6 +212,7 @@ export async function getUserData(userId: string): Promise<UserData | null> {
     phone: data.phone,
     avatar: data.avatar,
     storageMode: data.storageMode || 'managed',
+    byodConfig: data.byodConfig,
     createdAt: data.createdAt?.toDate?.() || new Date(),
     updatedAt: data.updatedAt?.toDate?.() || new Date(),
   };

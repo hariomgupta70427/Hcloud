@@ -1,0 +1,26 @@
+{
+    "version": 2,
+    "buildCommand": "npm run build",
+    "outputDirectory": "dist",
+    "framework": "vite",
+    "functions": {
+        "api/**/*.ts": {
+            "runtime": "@vercel/node@3.0.0"
+        }
+    },
+    "rewrites": [
+        {
+            "source": "/api/(.*)",
+            "destination": "/api/$1"
+        },
+        {
+            "source": "/(.*)",
+            "destination": "/index.html"
+        }
+    ],
+    "env": {
+        "TELEGRAM_API_ID": "@telegram-api-id",
+        "TELEGRAM_API_HASH": "@telegram-api-hash",
+        "TELEGRAM_BOT_TOKEN": "@telegram-bot-token"
+    }
+}

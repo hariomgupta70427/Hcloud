@@ -50,7 +50,7 @@ export function getPreviewType(filename: string, mimeType?: string): PreviewType
 
     // PDF
     if (ext === 'pdf' || mimeType === 'application/pdf') {
-        return 'pdf';
+        return 'office';
     }
 
     // Office Documents

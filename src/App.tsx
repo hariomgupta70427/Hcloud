@@ -19,6 +19,7 @@ import SharedPage from "./pages/dashboard/SharedPage";
 import TrashPage from "./pages/dashboard/TrashPage";
 import SettingsPage from "./pages/dashboard/SettingsPage";
 import ProfilePage from "./pages/dashboard/ProfilePage";
+import SharedFilePage from "./pages/public/SharedFilePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -51,6 +52,9 @@ const App = () => (
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />
                 <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+
+                {/* Public Shared File Route */}
+                <Route path="/s/:id" element={<SharedFilePage />} />
 
                 {/* Dashboard routes */}
                 <Route path="/dashboard" element={<DashboardLayout />}>

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import * as fileService from '@/services/fileService';
 import { FileItem } from '@/services/fileService';
+import { useAuthStore } from '@/stores/authStore';
 
 // Re-export FileItem type
 export type { FileItem };
@@ -36,6 +37,7 @@ interface FileState {
   deleteItem: (id: string) => Promise<void>;
   restoreItem: (id: string) => Promise<void>;
   permanentDeleteItem: (id: string) => Promise<void>;
+  emptyTrash: () => Promise<void>;
   shareItem: (id: string, settings: { password?: string; expiresAt?: Date }) => Promise<string>;
   setLoading: (loading: boolean) => void;
   setUploadProgress: (fileId: string, progress: number) => void;
@@ -275,6 +277,28 @@ export const useFileStore = create<FileState>((set, get) => ({
     } catch (error) {
       console.error('Error permanently deleting item:', error);
       throw error;
+    }
+  },
+
+  emptyTrash: async () => {
+    const { user } = useAuthStore.getState();
+    if (!user?.id) return;
+
+    try {
+      set({ isLoading: true });
+      await fileService.emptyTrash(user.id);
+      // Remove all trashed items from state (assuming current view is trash, or filter them out globaly)
+      // Actually, trashed items are usually only loaded in TrashPage. 
+      // Safest is to remove all items where isDeleted is true from store.
+      set((state) => ({
+        files: state.files.filter(f => !f.isDeleted),
+        selectedFiles: [],
+      }));
+    } catch (error) {
+      console.error('Error emptying trash:', error);
+      throw error;
+    } finally {
+      set({ isLoading: false });
     }
   },
 

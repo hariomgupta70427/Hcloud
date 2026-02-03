@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read and write their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Files collection
+    match /files/{fileId} {
+      // 1. Allow public read if the file is shared
+      // This MUST be first or as an OR condition
+      allow read: if resource.data.isShared == true;
+      
+      // 2. Allow Owner to Read/Write
+      allow read, write: if request.auth != null && (
+          resource.data.userId == request.auth.uid || 
+          request.resource.data.userId == request.auth.uid
+      );
+      
+      // Note: "request.resource.data.userId" is for CREATE/UPDATE.
+      // "resource.data.userId" is for READ/UPDATE/DELETE.
+    }
+  }
+}

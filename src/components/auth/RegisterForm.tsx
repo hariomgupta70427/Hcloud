@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mail, Lock, User, Phone, Cloud, HardDrive, ArrowRight, ArrowLeft, Check } from 'lucide-react';
+import { Mail, Lock, User, Phone, Cloud, HardDrive, ArrowRight, ArrowLeft, Check, Loader2 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { AuthInput, AuthButton } from './AuthInput';
 import { SocialButtons } from './SocialButtons';
+import { sendTelegramCode, verifyTelegramCode } from '@/services/telegramBYODService';
+import { toast } from 'sonner';
 
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -32,8 +34,15 @@ export function RegisterForm() {
   const [currentStep, setCurrentStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+  const [phoneCodeHash, setPhoneCodeHash] = useState<string>('');
+  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
+  const [telegramSession, setTelegramSession] = useState<string>('');
+  const [telegramUser, setTelegramUser] = useState<any>(null);
+  const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<RegisterFormData>({
+  const { register, handleSubmit, watch, setValue, getValues, formState: { errors } } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
       storageMode: 'managed',
@@ -41,22 +50,61 @@ export function RegisterForm() {
   });
 
   const storageMode = watch('storageMode');
+  const phone = watch('phone');
 
   const onSubmit = async (data: RegisterFormData) => {
     if (currentStep === 3) {
-      await registerUser({
-        name: data.name,
-        email: data.email,
-        password: data.password,
-        phone: data.phone,
-        storageMode: data.storageMode,
-      });
-      navigate('/dashboard');
+      // For BYOD mode, verify OTP first if not already verified
+      if (data.storageMode === 'byod' && !telegramSession) {
+        toast.error('Please verify your phone number first');
+        return;
+      }
+
+      try {
+        await registerUser({
+          name: data.name,
+          email: data.email,
+          password: data.password,
+          phone: data.phone,
+          storageMode: data.storageMode,
+          // Include BYOD config if applicable
+          ...(data.storageMode === 'byod' && telegramSession ? {
+            byodConfig: {
+              telegramSession,
+              telegramUserId: telegramUser?.id || '',
+              verified: true,
+            }
+          } : {}),
+        });
+        navigate('/dashboard');
+      } catch (error) {
+        console.error('Registration error:', error);
+      }
     }
   };
 
   const nextStep = () => {
     if (currentStep < 3) {
+      // Validate form fields before proceeding
+      if (currentStep === 2) {
+        const { name, email, password, phone } = getValues();
+        if (!name || name.length < 2) {
+          toast.error('Please enter your full name');
+          return;
+        }
+        if (!email || !email.includes('@')) {
+          toast.error('Please enter a valid email');
+          return;
+        }
+        if (!password || password.length < 8) {
+          toast.error('Password must be at least 8 characters');
+          return;
+        }
+        if (!phone || phone.length < 10) {
+          toast.error('Please enter a valid phone number');
+          return;
+        }
+      }
       setCurrentStep(currentStep + 1);
     }
   };
@@ -67,14 +115,127 @@ export function RegisterForm() {
     }
   };
 
-  const sendOTP = () => {
-    setOtpSent(true);
-    // Simulate OTP send
+  // Send OTP via Telegram for BYOD mode
+  const sendOTP = async () => {
+    const phoneNumber = getValues('phone');
+
+    if (!phoneNumber || phoneNumber.length < 10) {
+      toast.error('Please enter a valid phone number');
+      return;
+    }
+
+    // Format phone number (ensure it starts with +)
+    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+
+    setSendingOtp(true);
+
+    try {
+      if (storageMode === 'byod') {
+        // Use Telegram authentication for BYOD
+        const result = await sendTelegramCode(formattedPhone);
+
+        if (result.success && result.phoneCodeHash) {
+          setPhoneCodeHash(result.phoneCodeHash);
+          setOtpSent(true);
+          toast.success('Verification code sent to your Telegram app!');
+        } else {
+          toast.error(result.error || 'Failed to send verification code');
+        }
+      } else {
+        // For managed mode, simulate OTP (or implement Firebase Phone Auth)
+        setOtpSent(true);
+        toast.success('Verification code sent!');
+      }
+    } catch (error) {
+      console.error('Send OTP error:', error);
+      toast.error('Failed to send verification code. Please try again.');
+    } finally {
+      setSendingOtp(false);
+    }
+  };
+
+  // Handle OTP input changes
+  const handleOtpChange = (index: number, value: string) => {
+    if (value.length > 1) {
+      // Handle paste
+      const digits = value.slice(0, 6).split('');
+      const newOtpDigits = [...otpDigits];
+      digits.forEach((digit, i) => {
+        if (index + i < 6) {
+          newOtpDigits[index + i] = digit;
+        }
+      });
+      setOtpDigits(newOtpDigits);
+      // Focus last filled input or last input
+      const focusIndex = Math.min(index + digits.length, 5);
+      otpInputRefs.current[focusIndex]?.focus();
+    } else {
+      const newOtpDigits = [...otpDigits];
+      newOtpDigits[index] = value;
+      setOtpDigits(newOtpDigits);
+
+      // Auto-focus next input
+      if (value && index < 5) {
+        otpInputRefs.current[index + 1]?.focus();
+      }
+    }
+  };
+
+  // Handle OTP input keydown for backspace
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !otpDigits[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  // Verify OTP
+  const verifyOTP = async () => {
+    const otpCode = otpDigits.join('');
+
+    if (otpCode.length !== 6) {
+      toast.error('Please enter the complete 6-digit code');
+      return;
+    }
+
+    const phoneNumber = getValues('phone');
+    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+
+    setVerifyingOtp(true);
+
+    try {
+      if (storageMode === 'byod') {
+        // Verify with Telegram
+        const result = await verifyTelegramCode(formattedPhone, otpCode, phoneCodeHash);
+
+        if (result.success && result.session) {
+          setTelegramSession(result.session);
+          setTelegramUser(result.user);
+          toast.success('Phone verified successfully! Your cloud storage is now connected.');
+        } else if (result.needsPassword) {
+          toast.error('Two-factor authentication is enabled. Please disable it temporarily in Telegram settings.');
+        } else {
+          toast.error(result.error || 'Invalid verification code');
+          return;
+        }
+      } else {
+        // For managed mode, simulate verification
+        toast.success('Phone verified successfully!');
+      }
+    } catch (error) {
+      console.error('Verify OTP error:', error);
+      toast.error('Failed to verify code. Please try again.');
+    } finally {
+      setVerifyingOtp(false);
+    }
   };
 
   const handleGoogleSignup = () => {
     console.log('Google signup');
   };
+
+  // Check if OTP is complete and ready for verification
+  const isOtpComplete = otpDigits.every(d => d !== '');
+  const isVerified = storageMode === 'byod' ? !!telegramSession : otpSent;
 
   return (
     <motion.div
@@ -108,8 +269,8 @@ export function RegisterForm() {
                 <motion.div
                   initial={false}
                   animate={{
-                    backgroundColor: currentStep >= step.id 
-                      ? 'hsl(var(--primary))' 
+                    backgroundColor: currentStep >= step.id
+                      ? 'hsl(var(--primary))'
                       : 'hsl(var(--muted))',
                     scale: currentStep === step.id ? 1.1 : 1,
                   }}
@@ -128,10 +289,9 @@ export function RegisterForm() {
                 </span>
               </div>
               {index < steps.length - 1 && (
-                <div 
-                  className={`h-0.5 w-12 sm:w-20 mx-2 transition-colors ${
-                    currentStep > step.id ? 'bg-primary' : 'bg-border'
-                  }`} 
+                <div
+                  className={`h-0.5 w-12 sm:w-20 mx-2 transition-colors ${currentStep > step.id ? 'bg-primary' : 'bg-border'
+                    }`}
                 />
               )}
             </div>
@@ -153,13 +313,12 @@ export function RegisterForm() {
               <p className="text-sm text-muted-foreground mb-6">
                 Choose how you want to store your files
               </p>
-              
+
               <label
-                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                  storageMode === 'managed' 
-                    ? 'border-primary bg-primary/5' 
-                    : 'border-border hover:border-primary/50'
-                }`}
+                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${storageMode === 'managed'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-primary/50'
+                  }`}
                 onClick={() => setValue('storageMode', 'managed')}
               >
                 <div className="flex items-start gap-4">
@@ -169,15 +328,16 @@ export function RegisterForm() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-foreground">Managed Storage</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">Recommended</span>
                     </div>
                     <p className="text-sm text-muted-foreground mt-1">
                       HCloud handles everything. Zero setup, unlimited storage.
                     </p>
+                    <p className="text-xs text-amber-500 mt-1">
+                      50 MB per file limit
+                    </p>
                   </div>
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    storageMode === 'managed' ? 'border-primary' : 'border-border'
-                  }`}>
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${storageMode === 'managed' ? 'border-primary' : 'border-border'
+                    }`}>
                     {storageMode === 'managed' && (
                       <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                     )}
@@ -186,11 +346,10 @@ export function RegisterForm() {
               </label>
 
               <label
-                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                  storageMode === 'byod' 
-                    ? 'border-primary bg-primary/5' 
-                    : 'border-border hover:border-primary/50'
-                }`}
+                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${storageMode === 'byod'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-primary/50'
+                  }`}
                 onClick={() => setValue('storageMode', 'byod')}
               >
                 <div className="flex items-start gap-4">
@@ -198,14 +357,19 @@ export function RegisterForm() {
                     <HardDrive className={`w-6 h-6 ${storageMode === 'byod' ? 'text-primary' : 'text-muted-foreground'}`} />
                   </div>
                   <div className="flex-1">
-                    <span className="font-semibold text-foreground">Bring Your Own Telegram</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-foreground">Bring Your Own Server</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-500">Recommended</span>
+                    </div>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Use your Telegram account for full control.
+                      Use your own private cloud for unlimited storage.
+                    </p>
+                    <p className="text-xs text-green-500 mt-1">
+                      Up to 2 GB per file
                     </p>
                   </div>
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    storageMode === 'byod' ? 'border-primary' : 'border-border'
-                  }`}>
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${storageMode === 'byod' ? 'border-primary' : 'border-border'
+                    }`}>
                     {storageMode === 'byod' && (
                       <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                     )}
@@ -262,11 +426,17 @@ export function RegisterForm() {
               <AuthInput
                 label="Phone Number"
                 type="tel"
-                placeholder="+1 (555) 000-0000"
+                placeholder="+91 XXXXX XXXXX"
                 icon={<Phone size={18} />}
                 error={errors.phone?.message}
                 {...register('phone')}
               />
+
+              {storageMode === 'byod' && (
+                <p className="text-xs text-muted-foreground">
+                  Enter your phone number with country code. We'll verify it via SMS to connect your cloud storage.
+                </p>
+              )}
 
               <div className="flex gap-3 pt-4">
                 <AuthButton type="button" variant="outline" onClick={prevStep}>
@@ -289,44 +459,93 @@ export function RegisterForm() {
               className="space-y-6"
             >
               <div className="text-center">
-                <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 mb-4">
-                  <Phone className="w-8 h-8 text-primary" />
+                <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full mb-4 ${isVerified ? 'bg-green-500/10' : 'bg-primary/10'
+                  }`}>
+                  {isVerified ? (
+                    <Check className="w-8 h-8 text-green-500" />
+                  ) : (
+                    <Phone className="w-8 h-8 text-primary" />
+                  )}
                 </div>
-                <h3 className="text-lg font-semibold text-foreground">Verify your phone</h3>
+                <h3 className="text-lg font-semibold text-foreground">
+                  {isVerified ? 'Phone Verified!' : 'Verify your phone'}
+                </h3>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {otpSent 
-                    ? 'Enter the 6-digit code sent to your phone'
-                    : 'We\'ll send a verification code to your phone'}
+                  {isVerified
+                    ? 'Your cloud storage is now connected'
+                    : otpSent
+                      ? `Enter the code sent to ${phone}`
+                      : storageMode === 'byod'
+                        ? 'We\'ll send a code to your messaging app'
+                        : 'We\'ll send a verification code to your phone'}
                 </p>
               </div>
 
-              {otpSent ? (
+              {isVerified ? (
+                <div className="p-4 rounded-xl bg-green-500/5 border border-green-500/20">
+                  <p className="text-sm text-green-600 dark:text-green-400 text-center">
+                    ✓ Your private cloud storage is ready to use
+                  </p>
+                  {telegramUser && (
+                    <p className="text-xs text-muted-foreground text-center mt-2">
+                      Connected as {telegramUser.firstName} {telegramUser.lastName}
+                    </p>
+                  )}
+                </div>
+              ) : otpSent ? (
                 <div className="space-y-4">
                   <div className="flex gap-2 justify-center">
-                    {[...Array(6)].map((_, i) => (
+                    {otpDigits.map((digit, i) => (
                       <input
                         key={i}
+                        ref={(el) => (otpInputRefs.current[i] = el)}
                         type="text"
-                        maxLength={1}
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={digit}
+                        onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
+                        onKeyDown={(e) => handleOtpKeyDown(i, e)}
                         className="w-12 h-14 text-center text-xl font-semibold rounded-xl border border-border bg-muted/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
                       />
                     ))}
                   </div>
-                  <button 
-                    type="button" 
+
+                  {isOtpComplete && !verifyingOtp && (
+                    <AuthButton type="button" onClick={verifyOTP}>
+                      Verify Code
+                    </AuthButton>
+                  )}
+
+                  {verifyingOtp && (
+                    <div className="flex items-center justify-center gap-2 py-3">
+                      <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                      <span className="text-sm text-muted-foreground">Verifying...</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
                     className="w-full text-sm text-primary hover:underline"
                     onClick={sendOTP}
+                    disabled={sendingOtp}
                   >
-                    Resend code
+                    {sendingOtp ? 'Sending...' : 'Resend code'}
                   </button>
                 </div>
               ) : (
-                <AuthButton type="button" onClick={sendOTP}>
-                  Send verification code
+                <AuthButton type="button" onClick={sendOTP} disabled={sendingOtp}>
+                  {sendingOtp ? (
+                    <>
+                      <Loader2 className="inline-block mr-2 w-4 h-4 animate-spin" />
+                      Sending code...
+                    </>
+                  ) : (
+                    'Send verification code'
+                  )}
                 </AuthButton>
               )}
 
-              {otpSent && (
+              {isVerified && (
                 <AuthButton type="submit" isLoading={isLoading}>
                   Create account
                 </AuthButton>

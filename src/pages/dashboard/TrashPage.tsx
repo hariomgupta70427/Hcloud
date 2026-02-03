@@ -45,7 +45,12 @@ export default function TrashPage() {
 
         {trashedFiles.length > 0 && (
           <button
-            onClick={() => toast.info('Bulk delete coming soon')}
+            onClick={async () => {
+              if (window.confirm('Are you sure you want to empty the trash? This action cannot be undone.')) {
+                await useFileStore.getState().emptyTrash();
+                toast.success('Trash emptied');
+              }
+            }}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-destructive hover:bg-destructive/10 transition-colors"
           >
             <Trash size={18} />
