@@ -59,12 +59,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
             // Sign in with the code
-            await client.invoke({
-                _: 'auth.signIn',
+            // Sign in with the code
+            await client.invoke(new Api.auth.SignIn({
                 phoneNumber: normalizedPhone,
                 phoneCodeHash: phoneCodeHash,
                 phoneCode: code,
-            } as any);
+            }));
         } catch (signInError: any) {
             // Handle 2FA requirement
             if (signInError.message?.includes('SESSION_PASSWORD_NEEDED')) {
