@@ -38,7 +38,7 @@ export function RegisterForm() {
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [phoneCodeHash, setPhoneCodeHash] = useState<string>('');
   const [telegramSessionString, setTelegramSessionString] = useState<string>(''); // For stateless serverless
-  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
+  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '']);
   const [telegramSession, setTelegramSession] = useState<string>('');
   const [telegramUser, setTelegramUser] = useState<any>(null);
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -46,7 +46,8 @@ export function RegisterForm() {
   const { register, handleSubmit, watch, setValue, getValues, formState: { errors } } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
-      storageMode: 'managed',
+      storageMode: 'byod',
+      phone: '+91',
     },
   });
 
@@ -162,16 +163,16 @@ export function RegisterForm() {
   const handleOtpChange = (index: number, value: string) => {
     if (value.length > 1) {
       // Handle paste
-      const digits = value.slice(0, 6).split('');
+      const digits = value.slice(0, 5).split('');
       const newOtpDigits = [...otpDigits];
       digits.forEach((digit, i) => {
-        if (index + i < 6) {
+        if (index + i < 5) {
           newOtpDigits[index + i] = digit;
         }
       });
       setOtpDigits(newOtpDigits);
       // Focus last filled input or last input
-      const focusIndex = Math.min(index + digits.length, 5);
+      const focusIndex = Math.min(index + digits.length, 4);
       otpInputRefs.current[focusIndex]?.focus();
     } else {
       const newOtpDigits = [...otpDigits];
@@ -179,7 +180,7 @@ export function RegisterForm() {
       setOtpDigits(newOtpDigits);
 
       // Auto-focus next input
-      if (value && index < 5) {
+      if (value && index < 4) {
         otpInputRefs.current[index + 1]?.focus();
       }
     }
@@ -196,8 +197,8 @@ export function RegisterForm() {
   const verifyOTP = async () => {
     const otpCode = otpDigits.join('');
 
-    if (otpCode.length !== 6) {
-      toast.error('Please enter the complete 6-digit code');
+    if (otpCode.length !== 5) {
+      toast.error('Please enter the complete 5-digit code');
       return;
     }
 
@@ -319,37 +320,6 @@ export function RegisterForm() {
               </p>
 
               <label
-                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${storageMode === 'managed'
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border hover:border-primary/50'
-                  }`}
-                onClick={() => setValue('storageMode', 'managed')}
-              >
-                <div className="flex items-start gap-4">
-                  <div className={`p-2 rounded-lg ${storageMode === 'managed' ? 'bg-primary/10' : 'bg-muted'}`}>
-                    <Cloud className={`w-6 h-6 ${storageMode === 'managed' ? 'text-primary' : 'text-muted-foreground'}`} />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-foreground">Managed Storage</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      HCloud handles everything. Zero setup, unlimited storage.
-                    </p>
-                    <p className="text-xs text-amber-500 mt-1">
-                      50 MB per file limit
-                    </p>
-                  </div>
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${storageMode === 'managed' ? 'border-primary' : 'border-border'
-                    }`}>
-                    {storageMode === 'managed' && (
-                      <div className="w-2.5 h-2.5 rounded-full bg-primary" />
-                    )}
-                  </div>
-                </div>
-              </label>
-
-              <label
                 className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${storageMode === 'byod'
                   ? 'border-primary bg-primary/5'
                   : 'border-border hover:border-primary/50'
@@ -375,6 +345,37 @@ export function RegisterForm() {
                   <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${storageMode === 'byod' ? 'border-primary' : 'border-border'
                     }`}>
                     {storageMode === 'byod' && (
+                      <div className="w-2.5 h-2.5 rounded-full bg-primary" />
+                    )}
+                  </div>
+                </div>
+              </label>
+
+              <label
+                className={`block p-4 rounded-xl border-2 cursor-pointer transition-all ${storageMode === 'managed'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-primary/50'
+                  }`}
+                onClick={() => setValue('storageMode', 'managed')}
+              >
+                <div className="flex items-start gap-4">
+                  <div className={`p-2 rounded-lg ${storageMode === 'managed' ? 'bg-primary/10' : 'bg-muted'}`}>
+                    <Cloud className={`w-6 h-6 ${storageMode === 'managed' ? 'text-primary' : 'text-muted-foreground'}`} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-foreground">Managed Storage</span>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      HCloud handles everything. Zero setup, unlimited storage.
+                    </p>
+                    <p className="text-xs text-amber-500 mt-1">
+                      50 MB per file limit
+                    </p>
+                  </div>
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${storageMode === 'managed' ? 'border-primary' : 'border-border'
+                    }`}>
+                    {storageMode === 'managed' && (
                       <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                     )}
                   </div>
@@ -505,7 +506,7 @@ export function RegisterForm() {
                         ref={(el) => (otpInputRefs.current[i] = el)}
                         type="text"
                         inputMode="numeric"
-                        maxLength={6}
+                        maxLength={5}
                         value={digit}
                         onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
                         onKeyDown={(e) => handleOtpKeyDown(i, e)}
@@ -569,12 +570,6 @@ export function RegisterForm() {
           )}
         </AnimatePresence>
       </form>
-
-      {currentStep === 1 && (
-        <div className="mt-6">
-          <SocialButtons onGoogleClick={handleGoogleSignup} isLoading={isLoading} />
-        </div>
-      )}
 
       <motion.p
         initial={{ opacity: 0 }}
