@@ -109,31 +109,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
     } catch (error: any) {
         console.error('Verify code error:', error);
-        console.error('Error name:', error.name);
-        console.error('Error message:', error.message);
 
         // Disconnect client if connected
         if (client) {
             try {
                 await client.disconnect();
-            } catch (e) {
-                // Ignore disconnect errors
-            }
+            } catch (e) { /* ignore */ }
         }
 
-        if (error.message?.includes('PHONE_CODE_INVALID')) {
-            return res.status(400).json({ error: 'Invalid verification code. Please check and try again.' });
+        const errorMessage = error.message || 'Unknown error';
+
+        if (errorMessage.includes('PHONE_CODE_INVALID')) {
+            return res.status(400).json({ error: 'Invalid verification code.' });
         }
-        if (error.message?.includes('PHONE_CODE_EXPIRED')) {
-            return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
+        if (errorMessage.includes('PHONE_CODE_EXPIRED')) {
+            return res.status(400).json({ error: 'Verification code expired.' });
         }
-        if (error.message?.includes('PHONE_NUMBER_UNOCCUPIED')) {
-            return res.status(400).json({ error: 'This phone number is not registered on Telegram. Please register on Telegram first.' });
+        if (errorMessage.includes('SESSION_PASSWORD_NEEDED')) {
+            return res.status(200).json({
+                success: false,
+                needsPassword: true,
+                message: 'Two-step verification enabled.'
+            });
         }
 
+        // Return full error details for debugging
         return res.status(500).json({
-            error: 'Failed to verify code. Please try again.',
-            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+            error: `Verification failed: ${errorMessage}`,
+            stack: error.stack,
+            type: error.name
         });
     }
 }
