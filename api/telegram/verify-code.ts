@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { TelegramClient, sessions } from 'telegram';
+import { TelegramClient, sessions, Api } from 'telegram';
 const { StringSession } = sessions;
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
