@@ -3,12 +3,6 @@
     "buildCommand": "npm run build",
     "outputDirectory": "dist",
     "framework": "vite",
-    "functions": {
-        "api/**/*.ts": {
-            "runtime": "@vercel/node@3.0.0",
-            "maxDuration": 60
-        }
-    },
     "rewrites": [
         {
             "source": "/api/(.*)",
