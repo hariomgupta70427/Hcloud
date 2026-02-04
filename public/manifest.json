@@ -1,107 +1,22 @@
 {
     "name": "HCloud",
     "short_name": "HCloud",
-    "description": "Unlimited Cloud Storage - Store, share, and access your files anywhere",
+    "description": "Unlimited Cloud Storage",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#0a0a0b",
     "theme_color": "#6366f1",
     "orientation": "portrait-primary",
-    "scope": "/",
     "icons": [
         {
-            "src": "/icons/icon-72x72.png",
-            "sizes": "72x72",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-96x96.png",
-            "sizes": "96x96",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-128x128.png",
-            "sizes": "128x128",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-144x144.png",
-            "sizes": "144x144",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-152x152.png",
-            "sizes": "152x152",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-192x192.png",
-            "sizes": "192x192",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-384x384.png",
-            "sizes": "384x384",
-            "type": "image/png",
-            "purpose": "maskable any"
-        },
-        {
-            "src": "/icons/icon-512x512.png",
-            "sizes": "512x512",
-            "type": "image/png",
-            "purpose": "maskable any"
+            "src": "/favicon.svg",
+            "type": "image/svg+xml",
+            "sizes": "any",
+            "purpose": "any maskable"
         }
     ],
     "categories": [
         "productivity",
         "utilities"
-    ],
-    "screenshots": [
-        {
-            "src": "/screenshots/dashboard.png",
-            "sizes": "1280x720",
-            "type": "image/png",
-            "label": "Dashboard view"
-        },
-        {
-            "src": "/screenshots/files.png",
-            "sizes": "1280x720",
-            "type": "image/png",
-            "label": "File management"
-        }
-    ],
-    "shortcuts": [
-        {
-            "name": "Upload Files",
-            "short_name": "Upload",
-            "description": "Upload new files to your cloud",
-            "url": "/dashboard/files?upload=true",
-            "icons": [
-                {
-                    "src": "/icons/upload.png",
-                    "sizes": "96x96"
-                }
-            ]
-        },
-        {
-            "name": "My Files",
-            "short_name": "Files",
-            "description": "View your files",
-            "url": "/dashboard/files",
-            "icons": [
-                {
-                    "src": "/icons/folder.png",
-                    "sizes": "96x96"
-                }
-            ]
-        }
-    ],
-    "related_applications": [],
-    "prefer_related_applications": false
+    ]
 }
