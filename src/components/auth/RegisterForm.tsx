@@ -37,6 +37,7 @@ export function RegisterForm() {
   const [sendingOtp, setSendingOtp] = useState(false);
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [phoneCodeHash, setPhoneCodeHash] = useState<string>('');
+  const [telegramSessionString, setTelegramSessionString] = useState<string>(''); // For stateless serverless
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const [telegramSession, setTelegramSession] = useState<string>('');
   const [telegramUser, setTelegramUser] = useState<any>(null);
@@ -136,6 +137,9 @@ export function RegisterForm() {
 
         if (result.success && result.phoneCodeHash) {
           setPhoneCodeHash(result.phoneCodeHash);
+          if (result.sessionString) {
+            setTelegramSessionString(result.sessionString);
+          }
           setOtpSent(true);
           toast.success('Verification code sent to your Telegram app!');
         } else {
@@ -204,8 +208,8 @@ export function RegisterForm() {
 
     try {
       if (storageMode === 'byod') {
-        // Verify with Telegram
-        const result = await verifyTelegramCode(formattedPhone, otpCode, phoneCodeHash);
+        // Verify with Telegram - pass sessionString for stateless serverless
+        const result = await verifyTelegramCode(formattedPhone, otpCode, phoneCodeHash, telegramSessionString);
 
         if (result.success && result.session) {
           setTelegramSession(result.session);

@@ -1,10 +1,15 @@
 // Telegram Bot API Service for file storage
 // Uses Telegram as a free unlimited file storage backend
 
-const TELEGRAM_BOT_TOKEN = import.meta.env.VITE_TELEGRAM_BOT_TOKEN || '8187363619:AAFF40G_v9pp2mCdhId5DG_BnZk5gPWr4VY';
-const TELEGRAM_CHAT_ID = import.meta.env.VITE_TELEGRAM_CHAT_ID || '785286897';
+// Get credentials from environment variables - no fallbacks for security
+const TELEGRAM_BOT_TOKEN = import.meta.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = import.meta.env.TELEGRAM_CHAT_ID || '';
 const TELEGRAM_API_BASE = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
+// Validate required environment variables
+if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.error('Missing required Telegram environment variables. Check your .env file.');
+}
 // Max file sizes for Telegram Bot API
 export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB for regular uploads
 export const MAX_DOCUMENT_SIZE = 2000 * 1024 * 1024; // 2 GB for documents via URL
@@ -336,8 +341,8 @@ export async function downloadFromTelegram(
                 onProgress((received / total) * 100);
             }
         }
-
-        const blob = new Blob(chunks);
+        // Convert Uint8Array chunks to Blob (cast to any to avoid type issues)
+        const blob = new Blob(chunks as unknown as BlobPart[]);
         return { success: true, blob };
     } catch (error: any) {
         console.error('Telegram download error:', error);

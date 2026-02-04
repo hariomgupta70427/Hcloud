@@ -10,7 +10,8 @@ export interface TelegramAuthResult {
     success: boolean;
     message?: string;
     phoneCodeHash?: string;
-    session?: string;
+    sessionString?: string; // Session string for stateless serverless
+    session?: string; // Final session for authenticated user
     needsPassword?: boolean;
     user?: {
         id: string;
@@ -56,6 +57,7 @@ export async function sendTelegramCode(phone: string): Promise<TelegramAuthResul
             success: true,
             message: data.message,
             phoneCodeHash: data.phoneCodeHash,
+            sessionString: data.sessionString, // Store for verify-code
         };
     } catch (error) {
         console.error('Send code error:', error);
@@ -71,12 +73,14 @@ export async function sendTelegramCode(phone: string): Promise<TelegramAuthResul
  * @param phone Phone number used for authentication
  * @param code Verification code received
  * @param phoneCodeHash Hash received from sendTelegramCode
+ * @param sessionString Session string received from sendTelegramCode
  * @param password Optional 2FA password if enabled
  */
 export async function verifyTelegramCode(
     phone: string,
     code: string,
     phoneCodeHash: string,
+    sessionString?: string,
     password?: string
 ): Promise<TelegramAuthResult> {
     try {
@@ -85,7 +89,7 @@ export async function verifyTelegramCode(
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ phone, code, phoneCodeHash, password }),
+            body: JSON.stringify({ phone, code, phoneCodeHash, sessionString, password }),
         });
 
         const data = await response.json();

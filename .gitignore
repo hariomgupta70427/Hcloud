@@ -7,7 +7,10 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+
+# Build outputs
 dist
 dist-ssr
 *.local
@@ -22,6 +25,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.env
 src/lib/firebase.ts
 src/services/telegramService.ts
+
+# Environment files - NEVER COMMIT THESE
+.env
+.env.local
+.env.*.local
+
+# Vercel
+.vercel
+
+# Sensitive source files (if they contain hardcoded credentials)
+# Remove these lines once credentials are properly moved to env vars
+# src/lib/firebase.ts
+# src/services/telegramService.ts

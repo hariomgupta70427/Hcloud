@@ -1,23 +1,29 @@
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
+import {
+  getAuth,
   browserLocalPersistence,
   setPersistence,
 } from 'firebase/auth';
-import { 
-  getFirestore, 
+import {
+  getFirestore,
   enableIndexedDbPersistence,
 } from 'firebase/firestore';
 
+// Firebase configuration from environment variables
+// These MUST be set in .env file or Vercel dashboard
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyD5auuH07ThEzNFe721h4mwfxexBfqdlw0',
-  authDomain: 'hcloud-6e7eb.firebaseapp.com',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'hcloud-6e7eb',
-  storageBucket: 'hcloud-6e7eb.firebasestorage.app',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '710115852302',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:710115852302:web:d65c89af3daa11d8307c5f',
-  measurementId: 'G-5V1QSHY9W3',
+  apiKey: import.meta.env.FIREBASE_API_KEY,
+  authDomain: import.meta.env.FIREBASE_AUTH_DOMAIN || `${import.meta.env.FIREBASE_PROJECT_ID}.firebaseapp.com`,
+  projectId: import.meta.env.FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.FIREBASE_STORAGE_BUCKET || `${import.meta.env.FIREBASE_PROJECT_ID}.firebasestorage.app`,
+  messagingSenderId: import.meta.env.FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.FIREBASE_APP_ID,
 };
+
+// Validate required environment variables
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+  console.error('Missing required Firebase environment variables. Check your .env file.');
+}
 
 // Initialize Firebase
 export const app = initializeApp(firebaseConfig);

@@ -5,7 +5,8 @@
     "framework": "vite",
     "functions": {
         "api/**/*.ts": {
-            "runtime": "@vercel/node@3.0.0"
+            "runtime": "@vercel/node@3.0.0",
+            "maxDuration": 60
         }
     },
     "rewrites": [
@@ -17,10 +18,5 @@
             "source": "/(.*)",
             "destination": "/index.html"
         }
-    ],
-    "env": {
-        "TELEGRAM_API_ID": "@telegram-api-id",
-        "TELEGRAM_API_HASH": "@telegram-api-hash",
-        "TELEGRAM_BOT_TOKEN": "@telegram-bot-token"
-    }
+    ]
 }
