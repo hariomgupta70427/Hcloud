@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { TelegramClient, Api } from 'telegram';
-import { StringSession } from 'telegram/sessions';
-import { CustomFile } from 'telegram/client/uploads';
+import { TelegramClient, Api, sessions, client as clientUtils } from 'telegram';
+const { StringSession } = sessions;
+const { CustomFile } = clientUtils.uploads;
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
