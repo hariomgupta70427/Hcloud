@@ -27,6 +27,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       sourcemap: true,
+      chunkSizeWarningLimit: 1600,
     },
     // Define global constants from env vars (no VITE_ prefix needed)
     define: {
