@@ -41,6 +41,10 @@ export function RegisterForm() {
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '']);
   const [telegramSession, setTelegramSession] = useState<string>('');
   const [telegramUser, setTelegramUser] = useState<any>(null);
+  // 2FA State
+  const [isTwoFactorAuth, setIsTwoFactorAuth] = useState(false);
+  const [twoFactorPassword, setTwoFactorPassword] = useState('');
+
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const { register, handleSubmit, watch, setValue, getValues, formState: { errors } } = useForm<RegisterFormData>({
@@ -130,6 +134,9 @@ export function RegisterForm() {
     const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
 
     setSendingOtp(true);
+    // Reset 2FA state if re-sending
+    setIsTwoFactorAuth(false);
+    setTwoFactorPassword('');
 
     try {
       if (storageMode === 'byod') {
@@ -205,22 +212,40 @@ export function RegisterForm() {
     const phoneNumber = getValues('phone');
     const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
 
+    if (isTwoFactorAuth && !twoFactorPassword) {
+      toast.error('Please enter your password');
+      return;
+    }
+
     setVerifyingOtp(true);
 
     try {
       if (storageMode === 'byod') {
         // Verify with Telegram - pass sessionString for stateless serverless
-        const result = await verifyTelegramCode(formattedPhone, otpCode, phoneCodeHash, telegramSessionString);
+        // If 2FA is active, pass the password
+        const result = await verifyTelegramCode(
+          formattedPhone,
+          otpCode,
+          phoneCodeHash,
+          telegramSessionString,
+          isTwoFactorAuth ? twoFactorPassword : undefined
+        );
 
         if (result.success && result.session) {
           setTelegramSession(result.session);
           setTelegramUser(result.user);
+          // Auto-submit form or wait for user? The original flow waited for "Create Account"
           toast.success('Phone verified successfully! Your cloud storage is now connected.');
+          setIsTwoFactorAuth(false);
         } else if (result.needsPassword) {
-          toast.error('Two-factor authentication is enabled. Please disable it temporarily in Telegram settings.');
+          setIsTwoFactorAuth(true);
+          toast.info('Two-factor authentication required. Please enter your password.');
         } else {
           toast.error(result.error || 'Invalid verification code');
-          return;
+          // If password was wrong, keep 2FA screen open
+          if (isTwoFactorAuth) {
+            setTwoFactorPassword('');
+          }
         }
       } else {
         // For managed mode, simulate verification
@@ -228,7 +253,7 @@ export function RegisterForm() {
       }
     } catch (error) {
       console.error('Verify OTP error:', error);
-      toast.error('Failed to verify code. Please try again.');
+      toast.error('Failed to verify. Please try again.');
     } finally {
       setVerifyingOtp(false);
     }
@@ -498,45 +523,85 @@ export function RegisterForm() {
                   )}
                 </div>
               ) : otpSent ? (
-                <div className="space-y-4">
-                  <div className="flex gap-2 justify-center">
-                    {otpDigits.map((digit, i) => (
-                      <input
-                        key={i}
-                        ref={(el) => (otpInputRefs.current[i] = el)}
-                        type="text"
-                        inputMode="numeric"
-                        maxLength={5}
-                        value={digit}
-                        onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
-                        onKeyDown={(e) => handleOtpKeyDown(i, e)}
-                        className="w-12 h-14 text-center text-xl font-semibold rounded-xl border border-border bg-muted/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                  {isTwoFactorAuth ? (
+                    <div className="space-y-4">
+                      <div className="text-center mb-2">
+                        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/10 mb-2">
+                          <Lock className="w-6 h-6 text-amber-500" />
+                        </div>
+                        <p className="text-sm font-medium text-foreground">
+                          Two-Step Verification
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Enter your cloud password for {phone}
+                        </p>
+                      </div>
+
+                      <AuthInput
+                        label="Password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Enter your password"
+                        icon={<Lock size={18} />}
+                        showPasswordToggle
+                        isPasswordVisible={showPassword}
+                        onPasswordToggle={() => setShowPassword(!showPassword)}
+                        value={twoFactorPassword}
+                        onChange={(e) => setTwoFactorPassword(e.target.value)}
                       />
-                    ))}
-                  </div>
 
-                  {isOtpComplete && !verifyingOtp && (
-                    <AuthButton type="button" onClick={verifyOTP}>
-                      Verify Code
-                    </AuthButton>
-                  )}
+                      <AuthButton type="button" onClick={verifyOTP} isLoading={verifyingOtp}>
+                        {verifyingOtp ? 'Verifying...' : 'Unlock'}
+                      </AuthButton>
+                      
+                      <button
+                        type="button"
+                        className="w-full text-sm text-muted-foreground hover:text-foreground mt-2"
+                        onClick={() => setIsTwoFactorAuth(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex gap-2 justify-center">
+                        {otpDigits.map((digit, i) => (
+                          <input
+                            key={i}
+                            ref={(el) => (otpInputRefs.current[i] = el)}
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={5}
+                            value={digit}
+                            onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
+                            onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                            className="w-12 h-14 text-center text-xl font-semibold rounded-xl border border-border bg-muted/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                          />
+                        ))}
+                      </div>
 
-                  {verifyingOtp && (
-                    <div className="flex items-center justify-center gap-2 py-3">
-                      <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                      <span className="text-sm text-muted-foreground">Verifying...</span>
+                      {isOtpComplete && !verifyingOtp && (
+                        <AuthButton type="button" onClick={verifyOTP}>
+                          Verify Code
+                        </AuthButton>
+                      )}
+
+                      {verifyingOtp && (
+                        <div className="flex items-center justify-center gap-2 py-3">
+                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                          <span className="text-sm text-muted-foreground">Verifying...</span>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        className="w-full text-sm text-primary hover:underline"
+                        onClick={sendOTP}
+                        disabled={sendingOtp}
+                      >
+                        {sendingOtp ? 'Sending...' : 'Resend code'}
+                      </button>
                     </div>
                   )}
-
-                  <button
-                    type="button"
-                    className="w-full text-sm text-primary hover:underline"
-                    onClick={sendOTP}
-                    disabled={sendingOtp}
-                  >
-                    {sendingOtp ? 'Sending...' : 'Resend code'}
-                  </button>
-                </div>
               ) : (
                 <AuthButton type="button" onClick={sendOTP} disabled={sendingOtp}>
                   {sendingOtp ? (
@@ -582,6 +647,6 @@ export function RegisterForm() {
           Sign in
         </Link>
       </motion.p>
-    </motion.div>
+    </motion.div >
   );
 }

@@ -58,13 +58,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log('Client connected');
 
         try {
-            // Sign in with the code
-            // Sign in with the code
-            await client.invoke(new Api.auth.SignIn({
+            // Sign in with the code or password
+            // client.signIn handles 2FA (SRP) automatically if password is provided
+            await client.signIn({
                 phoneNumber: normalizedPhone,
                 phoneCodeHash: phoneCodeHash,
                 phoneCode: code,
-            }));
+                password: password || undefined,
+            });
         } catch (signInError: any) {
             // Handle 2FA requirement
             if (signInError.message?.includes('SESSION_PASSWORD_NEEDED')) {
