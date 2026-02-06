@@ -104,6 +104,7 @@ export async function verifyTelegramCode(
         return {
             success: data.success,
             session: data.session,
+            sessionString: data.sessionString, // For 2FA continuation
             needsPassword: data.needsPassword,
             message: data.message,
             user: data.user,

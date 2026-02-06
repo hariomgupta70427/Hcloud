@@ -5,6 +5,12 @@ const { StringSession } = sessions;
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
 
+// Custom device info for Telegram login notifications
+const DEVICE_MODEL = 'HCloud Web';
+const SYSTEM_VERSION = 'PWA 1.0';
+const APP_VERSION = '1.0.0';
+const LANG_CODE = 'en';
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -44,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log('API_ID:', API_ID);
         console.log('API_HASH present:', !!API_HASH);
 
-        // Create new Telegram client
+        // Create new Telegram client with custom device info
         client = new TelegramClient(
             new StringSession(''),
             API_ID,
@@ -52,6 +58,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             {
                 connectionRetries: 5,
                 useWSS: true,
+                deviceModel: DEVICE_MODEL,
+                systemVersion: SYSTEM_VERSION,
+                appVersion: APP_VERSION,
+                langCode: LANG_CODE,
             }
         );
 

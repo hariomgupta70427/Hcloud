@@ -238,6 +238,10 @@ export function RegisterForm() {
           toast.success('Phone verified successfully! Your cloud storage is now connected.');
           setIsTwoFactorAuth(false);
         } else if (result.needsPassword) {
+          // Save updated session for 2FA continuation
+          if (result.sessionString) {
+            setTelegramSessionString(result.sessionString);
+          }
           setIsTwoFactorAuth(true);
           toast.info('Two-factor authentication required. Please enter your password.');
         } else {

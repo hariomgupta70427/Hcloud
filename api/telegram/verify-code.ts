@@ -1,9 +1,15 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { TelegramClient, sessions, Api } from 'telegram';
+import { TelegramClient, sessions, Api, password as passwordModule } from 'telegram';
 const { StringSession } = sessions;
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
+
+// Custom device info for Telegram login notifications
+const DEVICE_MODEL = 'HCloud Web';
+const SYSTEM_VERSION = 'PWA 1.0';
+const APP_VERSION = '1.0.0';
+const LANG_CODE = 'en';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Enable CORS
@@ -51,6 +57,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             {
                 connectionRetries: 5,
                 useWSS: true,
+                deviceModel: DEVICE_MODEL,
+                systemVersion: SYSTEM_VERSION,
+                appVersion: APP_VERSION,
+                langCode: LANG_CODE,
             }
         );
 
@@ -58,34 +68,59 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log('Client connected');
 
         try {
-            // Sign in with the code or password
-            // client.signIn handles 2FA (SRP) automatically if password is provided
-            await (client as any).signIn({
+            // Try to sign in with the code
+            await client.invoke(new Api.auth.SignIn({
                 phoneNumber: normalizedPhone,
                 phoneCodeHash: phoneCodeHash,
                 phoneCode: code,
-                password: password || undefined,
-            });
+            }));
         } catch (signInError: any) {
             // Handle 2FA requirement
             if (signInError.message?.includes('SESSION_PASSWORD_NEEDED')) {
                 if (!password) {
+                    // Return the session so the client can continue with 2FA
+                    const partialSession = client.session.save() as unknown as string;
                     await client.disconnect();
                     return res.status(200).json({
                         success: false,
                         needsPassword: true,
+                        sessionString: partialSession, // Keep session for 2FA
                         message: 'Two-factor authentication is enabled. Please provide your password.',
                     });
                 }
 
-                // For now, return an error for 2FA (full implementation requires SRP)
-                await client.disconnect();
-                return res.status(400).json({
-                    error: 'Two-factor authentication is enabled. Please temporarily disable it in Telegram settings, then try again.',
-                });
-            }
+                // Handle 2FA with password using SRP
+                console.log('2FA required, computing SRP...');
 
-            throw signInError;
+                try {
+                    // Get password parameters from Telegram
+                    const passwordInfo = await client.invoke(new Api.account.GetPassword());
+
+                    // Compute the SRP check
+                    const srpResult = await passwordModule.computeCheck(passwordInfo, password);
+
+                    // Check the password
+                    await client.invoke(new Api.auth.CheckPassword({
+                        password: srpResult,
+                    }));
+
+                    console.log('2FA verified successfully');
+                } catch (srpError: any) {
+                    console.error('2FA verification failed:', srpError.message);
+                    await client.disconnect();
+
+                    if (srpError.message?.includes('PASSWORD_HASH_INVALID')) {
+                        return res.status(400).json({ error: 'Incorrect password. Please try again.' });
+                    }
+
+                    return res.status(400).json({
+                        error: 'Password verification failed.',
+                        details: srpError.message
+                    });
+                }
+            } else {
+                throw signInError;
+            }
         }
 
         // Get user info
