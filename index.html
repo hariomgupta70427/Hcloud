@@ -43,6 +43,13 @@
 </head>
 
 <body>
+  <!-- Node.js polyfills for browser (required by GramJS) -->
+  <script>
+    // Buffer polyfill - must run before modules load
+    window.global = window.global || window;
+    window.process = window.process || { env: {} };
+  </script>
+
   <div id="root"></div>
   <script type="module" src="/src/main.tsx"></script>
 

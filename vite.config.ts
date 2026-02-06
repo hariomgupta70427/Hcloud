@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import { Buffer } from 'buffer';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
@@ -23,14 +24,17 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
+        // Polyfill buffer for browser (needed by GramJS)
+        "buffer": "buffer",
       },
     },
     build: {
       sourcemap: true,
       chunkSizeWarningLimit: 1600,
     },
-    // Define global constants from env vars (no VITE_ prefix needed)
+    // Polyfill Node.js globals for browser
     define: {
+      'global': 'globalThis',
       'import.meta.env.FIREBASE_API_KEY': JSON.stringify(env.FIREBASE_API_KEY),
       'import.meta.env.FIREBASE_AUTH_DOMAIN': JSON.stringify(env.FIREBASE_AUTH_DOMAIN),
       'import.meta.env.FIREBASE_PROJECT_ID': JSON.stringify(env.FIREBASE_PROJECT_ID),
@@ -41,6 +45,16 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.TELEGRAM_CHAT_ID': JSON.stringify(env.TELEGRAM_CHAT_ID),
       'import.meta.env.TELEGRAM_API_ID': JSON.stringify(env.TELEGRAM_API_ID),
       'import.meta.env.TELEGRAM_API_HASH': JSON.stringify(env.TELEGRAM_API_HASH),
+    },
+    // Optimize dependencies
+    optimizeDeps: {
+      esbuildOptions: {
+        // Define global for Node.js modules
+        define: {
+          global: 'globalThis',
+        },
+      },
+      include: ['buffer'],
     },
   };
 });
