@@ -60,7 +60,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         try {
             // Sign in with the code or password
             // client.signIn handles 2FA (SRP) automatically if password is provided
-            await client.signIn({
+            await (client as any).signIn({
                 phoneNumber: normalizedPhone,
                 phoneCodeHash: phoneCodeHash,
                 phoneCode: code,

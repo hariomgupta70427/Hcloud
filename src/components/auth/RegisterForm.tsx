@@ -523,85 +523,85 @@ export function RegisterForm() {
                   )}
                 </div>
               ) : otpSent ? (
-                  {isTwoFactorAuth ? (
-                    <div className="space-y-4">
-                      <div className="text-center mb-2">
-                        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/10 mb-2">
-                          <Lock className="w-6 h-6 text-amber-500" />
-                        </div>
-                        <p className="text-sm font-medium text-foreground">
-                          Two-Step Verification
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Enter your cloud password for {phone}
-                        </p>
+                isTwoFactorAuth ? (
+                  <div className="space-y-4">
+                    <div className="text-center mb-2">
+                      <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/10 mb-2">
+                        <Lock className="w-6 h-6 text-amber-500" />
                       </div>
+                      <p className="text-sm font-medium text-foreground">
+                        Two-Step Verification
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Enter your cloud password for {phone}
+                      </p>
+                    </div>
 
-                      <AuthInput
-                        label="Password"
-                        type={showPassword ? 'text' : 'password'}
-                        placeholder="Enter your password"
-                        icon={<Lock size={18} />}
-                        showPasswordToggle
-                        isPasswordVisible={showPassword}
-                        onPasswordToggle={() => setShowPassword(!showPassword)}
-                        value={twoFactorPassword}
-                        onChange={(e) => setTwoFactorPassword(e.target.value)}
-                      />
+                    <AuthInput
+                      label="Password"
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="Enter your password"
+                      icon={<Lock size={18} />}
+                      showPasswordToggle
+                      isPasswordVisible={showPassword}
+                      onPasswordToggle={() => setShowPassword(!showPassword)}
+                      value={twoFactorPassword}
+                      onChange={(e) => setTwoFactorPassword(e.target.value)}
+                    />
 
-                      <AuthButton type="button" onClick={verifyOTP} isLoading={verifyingOtp}>
-                        {verifyingOtp ? 'Verifying...' : 'Unlock'}
+                    <AuthButton type="button" onClick={verifyOTP} isLoading={verifyingOtp}>
+                      {verifyingOtp ? 'Verifying...' : 'Unlock'}
+                    </AuthButton>
+
+                    <button
+                      type="button"
+                      className="w-full text-sm text-muted-foreground hover:text-foreground mt-2"
+                      onClick={() => setIsTwoFactorAuth(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex gap-2 justify-center">
+                      {otpDigits.map((digit, i) => (
+                        <input
+                          key={i}
+                          ref={(el) => (otpInputRefs.current[i] = el)}
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={5}
+                          value={digit}
+                          onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
+                          onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                          className="w-12 h-14 text-center text-xl font-semibold rounded-xl border border-border bg-muted/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        />
+                      ))}
+                    </div>
+
+                    {isOtpComplete && !verifyingOtp && (
+                      <AuthButton type="button" onClick={verifyOTP}>
+                        Verify Code
                       </AuthButton>
-                      
-                      <button
-                        type="button"
-                        className="w-full text-sm text-muted-foreground hover:text-foreground mt-2"
-                        onClick={() => setIsTwoFactorAuth(false)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex gap-2 justify-center">
-                        {otpDigits.map((digit, i) => (
-                          <input
-                            key={i}
-                            ref={(el) => (otpInputRefs.current[i] = el)}
-                            type="text"
-                            inputMode="numeric"
-                            maxLength={5}
-                            value={digit}
-                            onChange={(e) => handleOtpChange(i, e.target.value.replace(/\D/g, ''))}
-                            onKeyDown={(e) => handleOtpKeyDown(i, e)}
-                            className="w-12 h-14 text-center text-xl font-semibold rounded-xl border border-border bg-muted/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                          />
-                        ))}
+                    )}
+
+                    {verifyingOtp && (
+                      <div className="flex items-center justify-center gap-2 py-3">
+                        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                        <span className="text-sm text-muted-foreground">Verifying...</span>
                       </div>
+                    )}
 
-                      {isOtpComplete && !verifyingOtp && (
-                        <AuthButton type="button" onClick={verifyOTP}>
-                          Verify Code
-                        </AuthButton>
-                      )}
-
-                      {verifyingOtp && (
-                        <div className="flex items-center justify-center gap-2 py-3">
-                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Verifying...</span>
-                        </div>
-                      )}
-
-                      <button
-                        type="button"
-                        className="w-full text-sm text-primary hover:underline"
-                        onClick={sendOTP}
-                        disabled={sendingOtp}
-                      >
-                        {sendingOtp ? 'Sending...' : 'Resend code'}
-                      </button>
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      className="w-full text-sm text-primary hover:underline"
+                      onClick={sendOTP}
+                      disabled={sendingOtp}
+                    >
+                      {sendingOtp ? 'Sending...' : 'Resend code'}
+                    </button>
+                  </div>
+                )
               ) : (
                 <AuthButton type="button" onClick={sendOTP} disabled={sendingOtp}>
                   {sendingOtp ? (
