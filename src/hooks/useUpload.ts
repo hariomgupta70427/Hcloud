@@ -1,9 +1,14 @@
 import { useState, useCallback } from 'react';
 import { smartUploadToTelegram, MAX_FILE_SIZE, TelegramUploadResult } from '@/services/telegramService';
+import { uploadFileClientSide, MAX_REGULAR_FILE_SIZE, isClientUploadAvailable } from '@/services/telegramClientUpload';
 import { addFileRecord } from '@/services/fileService';
 import { useAuthStore } from '@/stores/authStore';
 import { useFileStore } from '@/stores/fileStore';
 import { toast } from 'sonner';
+
+// Maximum file sizes
+const MAX_MANAGED_FILE_SIZE = 50 * 1024 * 1024; // 50MB for Bot API (managed)
+const MAX_BYOD_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB for client-side MTProto (BYOD)
 
 export interface UploadingFile {
     file: File;
@@ -28,6 +33,10 @@ export function useUpload(): UseUploadReturn {
 
     const isUploading = uploadingFiles.some(f => f.status === 'uploading' || f.status === 'pending');
 
+    // Determine if user is BYOD with valid session
+    const isBYOD = user?.storageMode === 'byod' && !!user?.byodConfig?.telegramSession;
+    const maxFileSize = isBYOD ? MAX_BYOD_FILE_SIZE : MAX_MANAGED_FILE_SIZE;
+
     const updateFile = useCallback((index: number, updates: Partial<UploadingFile>) => {
         setUploadingFiles(files =>
             files.map((f, i) => (i === index ? { ...f, ...updates } : f))
@@ -38,23 +47,56 @@ export function useUpload(): UseUploadReturn {
         file: File,
         index: number
     ): Promise<TelegramUploadResult> => {
-        // Check file size
-        if (file.size > MAX_FILE_SIZE) {
+        // Check file size based on storage mode
+        if (file.size > maxFileSize) {
+            const sizeMB = Math.round(maxFileSize / (1024 * 1024));
+            const sizeStr = sizeMB >= 1000 ? `${(sizeMB / 1000).toFixed(1)}GB` : `${sizeMB}MB`;
             return {
                 success: false,
-                error: `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+                error: `File too large. Maximum size is ${sizeStr}`,
             };
         }
 
         updateFile(index, { status: 'uploading', progress: 0 });
 
-        // Upload to Telegram with progress
-        const result = await smartUploadToTelegram(file, (progress) => {
-            updateFile(index, { progress });
-        });
+        // Use client-side upload for BYOD users
+        if (isBYOD && user?.byodConfig?.telegramSession) {
+            console.log('[useUpload] Using client-side GramJS upload for BYOD');
 
-        return result;
-    }, [updateFile]);
+            if (!isClientUploadAvailable()) {
+                return {
+                    success: false,
+                    error: 'Client-side upload not configured. Missing API credentials.',
+                };
+            }
+
+            try {
+                const result = await uploadFileClientSide(
+                    file,
+                    user.byodConfig.telegramSession,
+                    (progress) => updateFile(index, { progress })
+                );
+
+                return {
+                    success: result.success,
+                    fileId: result.fileId,
+                    error: result.error,
+                };
+            } catch (error: any) {
+                console.error('[useUpload] Client upload error:', error);
+                return {
+                    success: false,
+                    error: error.message || 'Client-side upload failed',
+                };
+            }
+        } else {
+            // Managed: Upload via Bot API
+            console.log('[useUpload] Using Bot API upload for managed storage');
+            return await smartUploadToTelegram(file, (progress) => {
+                updateFile(index, { progress });
+            });
+        }
+    }, [updateFile, isBYOD, user, maxFileSize]);
 
     // Generate thumbnail for images
     const createThumbnail = async (file: File): Promise<string | undefined> => {
@@ -144,6 +186,8 @@ export function useUpload(): UseUploadReturn {
 
     const uploadFiles = useCallback(async (files: File[]) => {
         console.log('[useUpload] uploadFiles called with', files.length, 'files');
+        console.log('[useUpload] Storage mode:', user?.storageMode, 'BYOD:', isBYOD);
+        console.log('[useUpload] Max file size:', maxFileSize / (1024 * 1024), 'MB');
 
         if (!user) {
             console.log('[useUpload] No user, showing error toast');
@@ -220,7 +264,7 @@ export function useUpload(): UseUploadReturn {
         if (user) {
             loadFiles(user.id, currentFolder);
         }
-    }, [user, currentFolder, uploadSingleFile, updateFile, uploadingFiles.length, loadFiles]);
+    }, [user, isBYOD, maxFileSize, currentFolder, uploadSingleFile, updateFile, uploadingFiles.length, loadFiles]);
 
     const cancelUpload = useCallback((index: number) => {
         // Remove the file from the upload queue
