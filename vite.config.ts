@@ -24,7 +24,8 @@ export default defineConfig(({ mode }) => {
       react(),
       nodePolyfills({
         // Include polyfills for specific modules required by GramJS
-        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto'],
+        // Added 'crypto', 'net', 'tls' (as mocks)
+        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto', 'net', 'tls'],
         globals: {
           Buffer: true,
           global: true,
@@ -36,9 +37,6 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
-        "crypto": "crypto-browserify",
-        "stream": "stream-browserify",
-        "vm": "vm-browserify",
       },
     },
     build: {
@@ -47,6 +45,8 @@ export default defineConfig(({ mode }) => {
     },
     // Define environment variables
     define: {
+      // Polyfill global for libraries that expect it
+      'global': 'globalThis',
       'import.meta.env.FIREBASE_API_KEY': JSON.stringify(env.FIREBASE_API_KEY),
       'import.meta.env.FIREBASE_AUTH_DOMAIN': JSON.stringify(env.FIREBASE_AUTH_DOMAIN),
       'import.meta.env.FIREBASE_PROJECT_ID': JSON.stringify(env.FIREBASE_PROJECT_ID),
