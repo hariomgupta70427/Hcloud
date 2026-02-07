@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
       react(),
       nodePolyfills({
         // Include polyfills for specific modules required by GramJS
-        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib'],
+        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto'],
         globals: {
           Buffer: true,
           global: true,
