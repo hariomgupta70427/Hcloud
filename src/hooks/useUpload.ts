@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { smartUploadToTelegram, MAX_FILE_SIZE, TelegramUploadResult } from '@/services/telegramService';
-import { uploadFileClientSide, MAX_REGULAR_FILE_SIZE, isClientUploadAvailable } from '@/services/telegramClientUpload';
+import { uploadFileClientSide, MAX_FILE_SIZE as MAX_CLIENT_FILE_SIZE, isClientUploadAvailable } from '@/services/telegramClientUpload';
 import { addFileRecord } from '@/services/fileService';
 import { useAuthStore } from '@/stores/authStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 
 // Maximum file sizes
 const MAX_MANAGED_FILE_SIZE = 50 * 1024 * 1024; // 50MB for Bot API (managed)
-const MAX_BYOD_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB for client-side MTProto (BYOD)
+const MAX_BYOD_FILE_SIZE = MAX_CLIENT_FILE_SIZE; // 4GB for client-side MTProto (BYOD)
 
 export interface UploadingFile {
     file: File;

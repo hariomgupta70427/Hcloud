@@ -91,7 +91,7 @@ export function EmptyState({
         <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex flex-col items-center justify-center py-16 px-4 text-center"
+            className="w-full flex flex-col items-center justify-center py-16 px-4 text-center"
         >
             {/* Animated icon */}
             <motion.div

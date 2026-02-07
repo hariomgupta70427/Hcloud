@@ -12,8 +12,9 @@ const API_ID = parseInt(import.meta.env.TELEGRAM_API_ID || '0');
 const API_HASH = import.meta.env.TELEGRAM_API_HASH || '';
 
 // File size limits
-export const MAX_REGULAR_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB for regular users
-export const MAX_PREMIUM_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4GB for premium users
+// Telegram limits: 2GB for free, 4GB for premium
+// We set a safe upper limit of 4GB to allow Premium users
+export const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024;
 
 export interface ClientUploadResult {
     success: boolean;
@@ -77,7 +78,7 @@ async function getClient(sessionString: string): Promise<TelegramClient> {
 
 /**
  * Upload a file to user's Saved Messages using client-side GramJS
- * This bypasses Vercel serverless limits and supports up to 2GB files
+ * This bypasses Vercel serverless limits and supports up to 2GB/4GB files
  */
 export async function uploadFileClientSide(
     file: File,
@@ -95,11 +96,10 @@ export async function uploadFileClientSide(
     try {
         console.log('[ClientUpload] Starting upload for:', file.name, 'Size:', file.size);
 
-        // Check file size (2GB limit for regular users)
-        if (file.size > MAX_REGULAR_FILE_SIZE) {
+        if (file.size > MAX_FILE_SIZE) {
             return {
                 success: false,
-                error: `File too large. Maximum size is 2GB.`,
+                error: `File too large. Maximum size is 4GB.`,
             };
         }
 
@@ -108,14 +108,14 @@ export async function uploadFileClientSide(
         console.log('[ClientUpload] Connected to Telegram');
 
         // Upload file to Saved Messages ("me")
-        // GramJS sendFile can accept File object directly in browser
+        // GramJS sendFile can accept File object directly in browser and uses slicing
         console.log('[ClientUpload] Uploading to Saved Messages...');
 
         const result = await client.sendFile('me', {
             file: file,
             caption: '',
             forceDocument: true,
-            workers: 1, // Use single worker for stability
+            workers: 1, // Single worker is more stable for large files in browser
             progressCallback: (progress: number) => {
                 const percent = Math.round(progress * 100);
                 console.log(`[ClientUpload] Progress: ${percent}%`);
@@ -164,7 +164,7 @@ export async function uploadFileClientSide(
         if (error.message?.includes('FILE_PARTS_INVALID')) {
             return {
                 success: false,
-                error: 'File upload failed. Please try again.',
+                error: 'File upload failed (parts invalid). Please try again.',
             };
         }
 
