@@ -53,15 +53,17 @@ async function getClient(sessionString: string): Promise<TelegramClient> {
     // Create new client
     const session = new StringSession(sessionString);
     const client = new TelegramClient(session, API_ID, API_HASH, {
-        connectionRetries: 5,
+        connectionRetries: 10, // Increased retries
         useWSS: true,
         deviceModel: 'HCloud Web',
-        systemVersion: 'Browser',
+        systemVersion: 'Browser/Linux', // Sometimes forcing Linux helps generic browser detection
         appVersion: '1.0.0',
         langCode: 'en',
     });
 
+    console.log('[ClientUpload] Connecting to Telegram...');
     await client.connect();
+    console.log('[ClientUpload] Connection established.');
 
     // Verify session is valid
     const me = await client.getMe();

@@ -24,8 +24,8 @@ export default defineConfig(({ mode }) => {
       react(),
       nodePolyfills({
         // Include polyfills for specific modules required by GramJS
-        // Added 'crypto', 'net', 'tls' (as mocks)
-        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto', 'net', 'tls'],
+        // Crypto and stream are better handled by browserify aliases for full compatibility
+        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto'],
         globals: {
           Buffer: true,
           global: true,
@@ -37,6 +37,9 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
+        "crypto": "crypto-browserify",
+        "stream": "stream-browserify",
+        "vm": "vm-browserify",
       },
     },
     build: {
