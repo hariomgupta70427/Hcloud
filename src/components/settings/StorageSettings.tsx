@@ -5,9 +5,10 @@ interface StorageSettingsProps {
     currentMode: 'managed' | 'byod';
     isVerified?: boolean;
     onSwitchMode?: () => void;
+    onConnect?: () => void;
 }
 
-export function StorageSettings({ currentMode, isVerified = false, onSwitchMode }: StorageSettingsProps) {
+export function StorageSettings({ currentMode, isVerified = false, onSwitchMode, onConnect }: StorageSettingsProps) {
     const isByod = currentMode === 'byod';
 
     return (
@@ -30,8 +31,8 @@ export function StorageSettings({ currentMode, isVerified = false, onSwitchMode 
                 {/* Managed Storage */}
                 <div
                     className={`relative p-5 rounded-xl border-2 transition-colors ${!isByod
-                            ? 'border-primary bg-primary/5'
-                            : 'border-border hover:border-primary/30'
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:border-primary/30'
                         }`}
                 >
                     {!isByod && (
@@ -67,8 +68,8 @@ export function StorageSettings({ currentMode, isVerified = false, onSwitchMode 
                 {/* BYOD Storage */}
                 <div
                     className={`relative p-5 rounded-xl border-2 transition-colors ${isByod
-                            ? 'border-green-500 bg-green-500/5'
-                            : 'border-border hover:border-green-500/30'
+                        ? 'border-green-500 bg-green-500/5'
+                        : 'border-border hover:border-green-500/30'
                         }`}
                 >
                     {isByod && (
@@ -104,13 +105,24 @@ export function StorageSettings({ currentMode, isVerified = false, onSwitchMode 
                     </ul>
 
                     {isByod && (
-                        <div className="mt-4 flex items-center gap-2">
-                            <span className={`px-2 py-1 rounded-lg text-xs font-medium ${isVerified
+                        <div className="mt-4 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                                <span className={`px-2 py-1 rounded-lg text-xs font-medium ${isVerified
                                     ? 'bg-green-500/10 text-green-600 dark:text-green-400'
                                     : 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400'
-                                }`}>
-                                {isVerified ? '✓ Verified' : '⚠ Verification pending'}
-                            </span>
+                                    }`}>
+                                    {isVerified ? '✓ Verified' : '⚠ Verification pending'}
+                                </span>
+                            </div>
+
+                            {!isVerified && onConnect && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); onConnect(); }}
+                                    className="mt-2 w-full px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
+                                >
+                                    Connect Telegram
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>

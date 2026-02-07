@@ -196,6 +196,18 @@ export async function updateProfile(
   }
 }
 
+// Update BYOD configuration
+export async function updateBYODConfig(
+  userId: string,
+  config: BYODConfig
+): Promise<void> {
+  await updateDoc(doc(db, 'users', userId), {
+    byodConfig: config,
+    storageMode: 'byod', // Ensure storage mode is set to BYOD
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // Get user data from Firestore
 export async function getUserData(userId: string): Promise<UserData | null> {
   const userDoc = await getDoc(doc(db, 'users', userId));

@@ -20,6 +20,7 @@ import { ProfileEditForm } from '@/components/profile/ProfileEditForm';
 import { NotificationSettings } from '@/components/settings/NotificationSettings';
 import { SecuritySettings } from '@/components/settings/SecuritySettings';
 import { StorageSettings } from '@/components/settings/StorageSettings';
+import { TelegramConnectDialog } from '@/components/settings/TelegramConnectDialog';
 
 const settingsSections = [
   {
@@ -54,6 +55,7 @@ export default function SettingsPage() {
   const { theme, setTheme } = useUIStore();
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [showConnectDialog, setShowConnectDialog] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -129,7 +131,8 @@ export default function SettingsPage() {
             </button>
             <StorageSettings
               currentMode={user?.storageMode || 'managed'}
-              isVerified={true}
+              isVerified={!!user?.byodConfig?.telegramSession}
+              onConnect={() => setShowConnectDialog(true)}
             />
           </motion.div>
         );
@@ -145,6 +148,15 @@ export default function SettingsPage() {
         <AnimatePresence mode="wait">
           {renderSectionContent()}
         </AnimatePresence>
+
+        <TelegramConnectDialog
+          isOpen={showConnectDialog}
+          onClose={() => setShowConnectDialog(false)}
+          onConnect={() => {
+            // Optional: refresh user data or show success message if needed
+            // The dialog itself handles the updateBYODConfig call
+          }}
+        />
       </div>
     );
   }
@@ -205,8 +217,8 @@ export default function SettingsPage() {
               key={option.value}
               onClick={() => setTheme(option.value)}
               className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${theme === option.value
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border hover:border-primary/30'
+                ? 'border-primary bg-primary/5'
+                : 'border-border hover:border-primary/30'
                 }`}
             >
               <option.icon className={`w-6 h-6 ${theme === option.value ? 'text-primary' : 'text-muted-foreground'}`} />
@@ -270,6 +282,12 @@ export default function SettingsPage() {
           onSave={handleSaveProfile}
         />
       )}
+
+      <TelegramConnectDialog
+        isOpen={showConnectDialog}
+        onClose={() => setShowConnectDialog(false)}
+        onConnect={() => { }}
+      />
     </div>
   );
 }

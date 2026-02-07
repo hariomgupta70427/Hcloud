@@ -17,6 +17,7 @@ interface AuthState {
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateProfile: (updates: { name?: string; phone?: string; avatar?: string }) => Promise<void>;
+  updateBYODConfig: (config: { telegramSession: string; telegramUserId: string; verified: boolean }) => Promise<void>;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   initAuth: () => () => void;
@@ -140,6 +141,27 @@ export const useAuthStore = create<AuthState>()(
           });
         } catch (error) {
           set({ isLoading: false, error: 'Failed to update profile' });
+          throw error;
+        }
+      },
+
+      updateBYODConfig: async (config) => {
+        const { user } = get();
+        if (!user) throw new Error('Not authenticated');
+
+        set({ isLoading: true, error: null });
+        try {
+          await authService.updateBYODConfig(user.id, config);
+          set({
+            user: {
+              ...user,
+              storageMode: 'byod',
+              byodConfig: config
+            },
+            isLoading: false,
+          });
+        } catch (error) {
+          set({ isLoading: false, error: 'Failed to update BYOD configuration' });
           throw error;
         }
       },
