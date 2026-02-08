@@ -34,41 +34,79 @@ let cachedSession: string | null = null;
 
 /**
  * Get or create a TelegramClient instance
+ * Includes timeout handling for connection issues
  */
 async function getClient(sessionString: string): Promise<TelegramClient> {
     // Reuse existing client if session matches
     if (cachedClient && cachedSession === sessionString) {
         if (cachedClient.connected) {
+            console.log('[ClientUpload] Reusing cached connected client');
             return cachedClient;
         }
         // Try to reconnect
         try {
+            console.log('[ClientUpload] Reconnecting cached client...');
             await cachedClient.connect();
             return cachedClient;
-        } catch {
+        } catch (e) {
+            console.warn('[ClientUpload] Failed to reconnect cached client:', e);
             cachedClient = null;
         }
     }
 
     // Create new client
+    console.log('[ClientUpload] Creating new TelegramClient...');
+    console.log('[ClientUpload] API_ID:', API_ID ? 'SET' : 'MISSING');
+    console.log('[ClientUpload] API_HASH:', API_HASH ? 'SET' : 'MISSING');
+    console.log('[ClientUpload] Session length:', sessionString?.length || 0);
+
+    if (!sessionString || sessionString.length < 10) {
+        throw new Error('Invalid or empty session string');
+    }
+
     const session = new StringSession(sessionString);
     const client = new TelegramClient(session, API_ID, API_HASH, {
-        connectionRetries: 10, // Increased retries
+        connectionRetries: 10,
         useWSS: true,
         deviceModel: 'HCloud Web',
-        systemVersion: 'Browser/Linux', // Sometimes forcing Linux helps generic browser detection
+        systemVersion: 'Browser/Linux',
         appVersion: '1.0.0',
         langCode: 'en',
+        timeout: 60000, // 60 second timeout
     });
 
+    // Connect with a manual timeout wrapper
     console.log('[ClientUpload] Connecting to Telegram...');
-    await client.connect();
-    console.log('[ClientUpload] Connection established.');
+    const connectPromise = client.connect();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timeout (60s)')), 60000);
+    });
 
-    // Verify session is valid
-    const me = await client.getMe();
-    if (!me) {
-        throw new Error('Invalid session');
+    try {
+        await Promise.race([connectPromise, timeoutPromise]);
+        console.log('[ClientUpload] Connection established.');
+    } catch (connectionError: any) {
+        console.error('[ClientUpload] Connection failed:', connectionError.message);
+        throw new Error(`Connection failed: ${connectionError.message}`);
+    }
+
+    // Verify session is valid with timeout
+    console.log('[ClientUpload] Verifying session (getMe)...');
+    try {
+        const getMePromise = client.getMe();
+        const getMeTimeout = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('getMe timeout (30s)')), 30000);
+        });
+        const me = await Promise.race([getMePromise, getMeTimeout]);
+
+        if (!me) {
+            throw new Error('Session invalid - getMe returned null');
+        }
+        console.log('[ClientUpload] Session verified for user:', (me as any).username || (me as any).firstName || 'Unknown');
+    } catch (verifyError: any) {
+        console.error('[ClientUpload] Session verification failed:', verifyError.message);
+        await client.disconnect().catch(() => { });
+        throw new Error(`Session verification failed: ${verifyError.message}`);
     }
 
     // Cache the client
@@ -111,19 +149,40 @@ export async function uploadFileClientSide(
 
         // Upload file to Saved Messages ("me")
         // GramJS sendFile can accept File object directly in browser and uses slicing
-        console.log('[ClientUpload] Uploading to Saved Messages...');
+        console.log('[ClientUpload] Starting sendFile to Saved Messages...');
+        console.log('[ClientUpload] File details:', { name: file.name, size: file.size, type: file.type });
 
-        const result = await client.sendFile('me', {
+        let lastProgressTime = Date.now();
+        const uploadTimeout = 10 * 60 * 1000; // 10 minute timeout for upload
+
+        const sendFilePromise = client.sendFile('me', {
             file: file,
             caption: '',
             forceDocument: true,
             workers: 1, // Single worker is more stable for large files in browser
             progressCallback: (progress: number) => {
+                lastProgressTime = Date.now();
                 const percent = Math.round(progress * 100);
                 console.log(`[ClientUpload] Progress: ${percent}%`);
                 onProgress?.(percent);
             },
         });
+
+        // Monitor progress and timeout if stuck
+        const uploadTimeoutPromise = new Promise<never>((_, reject) => {
+            const checkInterval = setInterval(() => {
+                const elapsed = Date.now() - lastProgressTime;
+                if (elapsed > uploadTimeout) {
+                    clearInterval(checkInterval);
+                    reject(new Error('Upload timeout - no progress for 10 minutes'));
+                }
+            }, 30000);
+
+            // Clear interval when upload completes
+            sendFilePromise.finally(() => clearInterval(checkInterval));
+        });
+
+        const result = await Promise.race([sendFilePromise, uploadTimeoutPromise]);
 
         console.log('[ClientUpload] Upload complete, messageId:', result.id);
 
