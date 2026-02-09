@@ -6,6 +6,9 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { TelegramClient, sessions } from 'telegram';
 const { StringSession } = sessions;
 
@@ -229,48 +232,75 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
         console.log('📤 Uploading to Telegram Saved Messages...');
 
-        // Upload to Saved Messages
-        // GramJS accepts Buffer directly with a file property that has name, size, and the buffer
-        const result = await client.sendFile('me', {
-            file: {
-                name: uploadSession.fileName,
-                size: fileBuffer.length,
-                buffer: fileBuffer,
-            } as any,
-            caption: '',
-            forceDocument: true,
-            progressCallback: (progress: number) => {
-                const percent = Math.round(progress * 100);
-                if (percent % 10 === 0) {
-                    console.log(`📤 Telegram upload: ${percent}%`);
+        // Write buffer to temp file (GramJS works best with file paths in Node.js)
+        const tempDir = os.tmpdir();
+        const tempFilePath = path.join(tempDir, `hcloud_upload_${uploadId}_${uploadSession.fileName}`);
+
+        console.log(`📁 Writing to temp file: ${tempFilePath}`);
+        fs.writeFileSync(tempFilePath, fileBuffer);
+        console.log(`📁 Temp file written (${fileBuffer.length} bytes)`);
+
+        try {
+            // Upload using file path - the most reliable method for Node.js
+            const result = await client.sendFile('me', {
+                file: tempFilePath,
+                caption: '',
+                forceDocument: true,
+                progressCallback: (progress: number) => {
+                    const percent = Math.round(progress * 100);
+                    if (percent % 10 === 0) {
+                        console.log(`📤 Telegram upload: ${percent}%`);
+                    }
+                },
+            });
+
+            console.log(`✅ Upload complete! Message ID: ${result.id}`);
+
+            // Extract file ID
+            let fileId = '';
+            if (result.media) {
+                const media = result.media as any;
+                if (media.document) {
+                    fileId = media.document.id.toString();
+                } else if (media.photo) {
+                    fileId = `photo_${media.photo.id}`;
                 }
-            },
-        });
-
-        console.log(`✅ Upload complete! Message ID: ${result.id}`);
-
-        // Extract file ID
-        let fileId = '';
-        if (result.media) {
-            const media = result.media as any;
-            if (media.document) {
-                fileId = media.document.id.toString();
-            } else if (media.photo) {
-                fileId = `photo_${media.photo.id}`;
             }
+
+            // Disconnect and cleanup
+            await client.disconnect();
+            uploadSessions.delete(uploadId);
+
+            // Clean up temp file
+            try {
+                fs.unlinkSync(tempFilePath);
+                console.log(`🧹 Temp file cleaned up`);
+            } catch (e) {
+                console.warn(`⚠️ Failed to delete temp file: ${tempFilePath}`);
+            }
+
+            return res.json({
+                success: true,
+                messageId: result.id,
+                fileId,
+                fileName: uploadSession.fileName,
+                fileSize: fileBuffer.length,
+            });
+
+        } catch (error: any) {
+            console.error('❌ Upload error:', error);
+
+            // Clean up temp file on error
+            try {
+                if (fs.existsSync(tempFilePath)) {
+                    fs.unlinkSync(tempFilePath);
+                }
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+
+            throw error; // Re-throw to outer catch
         }
-
-        // Disconnect and cleanup
-        await client.disconnect();
-        uploadSessions.delete(uploadId);
-
-        return res.json({
-            success: true,
-            messageId: result.id,
-            fileId,
-            fileName: uploadSession.fileName,
-            fileSize: fileBuffer.length,
-        });
 
     } catch (error: any) {
         console.error('❌ Finalize error:', error);
