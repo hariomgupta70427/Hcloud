@@ -59,34 +59,45 @@ export function useUpload(): UseUploadReturn {
 
         updateFile(index, { status: 'uploading', progress: 0 });
 
-        // Use server-side chunked upload for BYOD users
+        // BYOD users: Smart routing based on file size
+        // - Files ≤50MB: Use Bot API (fast, no cold start)
+        // - Files >50MB: Use Render chunked upload (handles large files)
         if (isBYOD && user?.byodConfig?.telegramSession) {
-            console.log('[useUpload] Using server-side chunked upload for BYOD');
+            const BYOD_BOT_API_LIMIT = 50 * 1024 * 1024; // 50MB
 
-            try {
-                const result = await uploadFileChunked(
-                    file,
-                    user.byodConfig.telegramSession,
-                    (progress) => {
-                        // Convert chunked progress to simple percentage
-                        updateFile(index, { progress: progress.percent });
-                    }
-                );
+            if (file.size <= BYOD_BOT_API_LIMIT) {
+                // Small file: Use Bot API (same as managed, but with BYOD credentials)
+                console.log('[useUpload] BYOD small file (≤50MB): Using Bot API');
+                return await smartUploadToTelegram(file, (progress) => {
+                    updateFile(index, { progress });
+                });
+            } else {
+                // Large file: Use Render chunked upload
+                console.log('[useUpload] BYOD large file (>50MB): Using Render chunked upload');
+                try {
+                    const result = await uploadFileChunked(
+                        file,
+                        user.byodConfig.telegramSession,
+                        (progress) => {
+                            updateFile(index, { progress: progress.percent });
+                        }
+                    );
 
-                return {
-                    success: result.success,
-                    fileId: result.fileId,
-                    error: result.error,
-                };
-            } catch (error: any) {
-                console.error('[useUpload] Chunked upload error:', error);
-                return {
-                    success: false,
-                    error: error.message || 'Server-side upload failed',
-                };
+                    return {
+                        success: result.success,
+                        fileId: result.fileId,
+                        error: result.error,
+                    };
+                } catch (error: any) {
+                    console.error('[useUpload] Chunked upload error:', error);
+                    return {
+                        success: false,
+                        error: error.message || 'Server-side upload failed',
+                    };
+                }
             }
         } else {
-            // Managed: Upload via Bot API
+            // Managed: Always use Bot API
             console.log('[useUpload] Using Bot API upload for managed storage');
             return await smartUploadToTelegram(file, (progress) => {
                 updateFile(index, { progress });

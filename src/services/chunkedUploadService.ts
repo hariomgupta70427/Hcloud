@@ -1,16 +1,14 @@
 /**
  * Chunked Upload Service for BYOD
  * Splits large files into chunks and uploads via dedicated Render server
- * Bypasses browser WebSocket restrictions by using the backend
+ * Used ONLY for files >50MB (to avoid cold start delays for small files)
  */
 
 // Chunk size: 4MB (safe for most servers)
 const CHUNK_SIZE = 4 * 1024 * 1024;
 
-// Upload server URL - set this to your Render deployment URL
-// For local development: http://localhost:3001
-// For production: https://your-render-app.onrender.com
-const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud-upload-server.onrender.com';
+// Upload server URL - Render deployment
+const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud.onrender.com';
 
 const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
