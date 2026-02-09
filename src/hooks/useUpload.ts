@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { smartUploadToTelegram, MAX_FILE_SIZE, TelegramUploadResult } from '@/services/telegramService';
-import { uploadFileClientSide, MAX_FILE_SIZE as MAX_CLIENT_FILE_SIZE, isClientUploadAvailable } from '@/services/telegramClientUpload';
+import { uploadFileChunked } from '@/services/chunkedUploadService';
 import { addFileRecord } from '@/services/fileService';
 import { useAuthStore } from '@/stores/authStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 
 // Maximum file sizes
 const MAX_MANAGED_FILE_SIZE = 50 * 1024 * 1024; // 50MB for Bot API (managed)
-const MAX_BYOD_FILE_SIZE = MAX_CLIENT_FILE_SIZE; // 4GB for client-side MTProto (BYOD)
+const MAX_BYOD_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB for BYOD (via chunked server upload)
 
 export interface UploadingFile {
     file: File;
@@ -59,22 +59,18 @@ export function useUpload(): UseUploadReturn {
 
         updateFile(index, { status: 'uploading', progress: 0 });
 
-        // Use client-side upload for BYOD users
+        // Use server-side chunked upload for BYOD users
         if (isBYOD && user?.byodConfig?.telegramSession) {
-            console.log('[useUpload] Using client-side GramJS upload for BYOD');
-
-            if (!isClientUploadAvailable()) {
-                return {
-                    success: false,
-                    error: 'Client-side upload not configured. Missing API credentials.',
-                };
-            }
+            console.log('[useUpload] Using server-side chunked upload for BYOD');
 
             try {
-                const result = await uploadFileClientSide(
+                const result = await uploadFileChunked(
                     file,
                     user.byodConfig.telegramSession,
-                    (progress) => updateFile(index, { progress })
+                    (progress) => {
+                        // Convert chunked progress to simple percentage
+                        updateFile(index, { progress: progress.percent });
+                    }
                 );
 
                 return {
@@ -83,10 +79,10 @@ export function useUpload(): UseUploadReturn {
                     error: result.error,
                 };
             } catch (error: any) {
-                console.error('[useUpload] Client upload error:', error);
+                console.error('[useUpload] Chunked upload error:', error);
                 return {
                     success: false,
-                    error: error.message || 'Client-side upload failed',
+                    error: error.message || 'Server-side upload failed',
                 };
             }
         } else {
@@ -97,6 +93,7 @@ export function useUpload(): UseUploadReturn {
             });
         }
     }, [updateFile, isBYOD, user, maxFileSize]);
+
 
     // Generate thumbnail for images
     const createThumbnail = async (file: File): Promise<string | undefined> => {
