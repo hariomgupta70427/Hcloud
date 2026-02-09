@@ -1,12 +1,19 @@
 /**
  * Chunked Upload Service for BYOD
- * Splits large files into chunks and uploads via server-side API
+ * Splits large files into chunks and uploads via dedicated Render server
  * Bypasses browser WebSocket restrictions by using the backend
  */
 
-// Chunk size: 4MB (safe for Vercel's body limit)
+// Chunk size: 4MB (safe for most servers)
 const CHUNK_SIZE = 4 * 1024 * 1024;
-const API_ENDPOINT = '/api/telegram/chunked-upload';
+
+// Upload server URL - set this to your Render deployment URL
+// For local development: http://localhost:3001
+// For production: https://your-render-app.onrender.com
+const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud-upload-server.onrender.com';
+
+const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
+const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
 
 export interface ChunkedUploadResult {
     success: boolean;
@@ -42,13 +49,12 @@ async function uploadChunk(
     session: string
 ): Promise<{ success: boolean; error?: string }> {
     try {
-        const response = await fetch(API_ENDPOINT, {
+        const response = await fetch(API_CHUNK, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                action: 'chunk',
                 uploadId,
                 chunkIndex,
                 totalChunks,
@@ -80,13 +86,12 @@ async function finalizeUpload(
     session: string
 ): Promise<ChunkedUploadResult> {
     try {
-        const response = await fetch(API_ENDPOINT, {
+        const response = await fetch(API_FINALIZE, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                action: 'finalize',
                 uploadId,
                 session,
             }),
