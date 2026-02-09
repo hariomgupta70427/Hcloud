@@ -229,14 +229,14 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
         console.log('📤 Uploading to Telegram Saved Messages...');
 
-        // Upload to Saved Messages using streaming
+        // Upload to Saved Messages
+        // GramJS accepts Buffer directly with a file property that has name, size, and the buffer
         const result = await client.sendFile('me', {
-            file: new (await import('telegram/client/uploads.js')).CustomFile(
-                uploadSession.fileName,
-                fileBuffer.length,
-                '',
-                fileBuffer
-            ),
+            file: {
+                name: uploadSession.fileName,
+                size: fileBuffer.length,
+                buffer: fileBuffer,
+            } as any,
             caption: '',
             forceDocument: true,
             progressCallback: (progress: number) => {
