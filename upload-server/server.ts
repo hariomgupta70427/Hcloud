@@ -6,9 +6,10 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { TelegramClient, sessions, Api } from 'telegram';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { CustomFile } = require('telegram/client/uploads');
 const { StringSession } = sessions;
 
 // Environment variables
@@ -225,18 +226,35 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         }
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
 
-        // Upload buffer directly to Telegram using CustomFile
+        // Write buffer to temp file for GramJS (most reliable method)
+        console.log('📤 Writing temp file for upload...');
+        const tempDir = os.tmpdir();
+        const tempPath = path.join(tempDir, `hcloud_${uploadId}_${Date.now()}`);
+        fs.writeFileSync(tempPath, fileBuffer);
+
+        // Free buffer memory now that it's on disk
+        const fileSize = fileBuffer.length;
+        const fileName = uploadSession.fileName;
+        const mimeType = uploadSession.mimeType;
+
         console.log('📤 Uploading to Telegram...');
-        const customFile = new CustomFile(
-            uploadSession.fileName,
-            fileBuffer.length,
-            '',  // no file path, using buffer
-            fileBuffer
-        );
-        const toUpload = await client.uploadFile({
-            file: customFile,
-            workers: 4,
-        });
+        let toUpload;
+        try {
+            // Dynamic import of CustomFile to avoid build issues
+            const { CustomFile } = await import('telegram/client/uploads');
+            const customFile = new CustomFile(
+                fileName,
+                fileSize,
+                tempPath  // use file path instead of buffer
+            );
+            toUpload = await client.uploadFile({
+                file: customFile,
+                workers: 4,
+            });
+        } finally {
+            // Always clean up temp file
+            try { fs.unlinkSync(tempPath); } catch (e) { /* ignore */ }
+        }
 
         // Send to Saved Messages
         const result = await client.invoke(
@@ -244,10 +262,10 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
                 peer: 'me',
                 media: new Api.InputMediaUploadedDocument({
                     file: toUpload,
-                    mimeType: uploadSession.mimeType || 'application/octet-stream',
+                    mimeType: mimeType || 'application/octet-stream',
                     attributes: [
                         new Api.DocumentAttributeFilename({
-                            fileName: uploadSession.fileName,
+                            fileName: fileName,
                         }),
                     ],
                 }),
@@ -284,8 +302,8 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
             success: true,
             messageId,
             fileId,
-            fileName: uploadSession.fileName,
-            fileSize: fileBuffer.length,
+            fileName: fileName,
+            fileSize: fileSize,
         });
 
     } catch (error: any) {
