@@ -7,6 +7,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { TelegramClient, sessions, Api } from 'telegram';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { CustomFile } = require('telegram/client/uploads');
 const { StringSession } = sessions;
 
 // Environment variables
@@ -223,13 +225,16 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         }
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
 
-        // Upload buffer directly to Telegram (no temp file!)
+        // Upload buffer directly to Telegram using CustomFile
         console.log('📤 Uploading to Telegram...');
+        const customFile = new CustomFile(
+            uploadSession.fileName,
+            fileBuffer.length,
+            '',  // no file path, using buffer
+            fileBuffer
+        );
         const toUpload = await client.uploadFile({
-            file: {
-                name: uploadSession.fileName,
-                buffer: fileBuffer,
-            } as any,
+            file: customFile,
             workers: 4,
         });
 
