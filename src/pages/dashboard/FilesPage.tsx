@@ -19,6 +19,7 @@ import { PreviewModal, getPreviewType, PreviewFile } from '@/components/preview/
 import { FileItem } from '@/services/fileService';
 import * as fileService from '@/services/fileService';
 import { getFileFromTelegram } from '@/services/telegramService';
+import { downloadBYODFile } from '@/services/chunkedUploadService';
 import { useUpload } from '@/hooks/useUpload';
 import { toast } from 'sonner';
 
@@ -157,19 +158,39 @@ export default function FilesPage() {
 
     const toastId = toast.loading(`Preparing download: ${file.name}`);
     try {
-      const result = await getFileFromTelegram(file.telegramFileId);
-      if (result.success && result.downloadUrl) {
-        const link = document.createElement('a');
-        link.href = result.downloadUrl;
-        link.download = file.name;
-        link.target = '_blank';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        toast.dismiss(toastId);
-        toast.success('Download started');
+      // BYOD files: download via Render server
+      if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
+        const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
+        if (result.success && result.blobUrl) {
+          const link = document.createElement('a');
+          link.href = result.blobUrl;
+          link.download = file.name;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          // Revoke after a delay
+          setTimeout(() => URL.revokeObjectURL(result.blobUrl!), 30000);
+          toast.dismiss(toastId);
+          toast.success('Download started');
+        } else {
+          toast.error(result.error || 'Failed to download', { id: toastId });
+        }
       } else {
-        toast.error('Failed to get download link', { id: toastId });
+        // Managed files: download via Bot API
+        const result = await getFileFromTelegram(file.telegramFileId);
+        if (result.success && result.downloadUrl) {
+          const link = document.createElement('a');
+          link.href = result.downloadUrl;
+          link.download = file.name;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          toast.dismiss(toastId);
+          toast.success('Download started');
+        } else {
+          toast.error('Failed to get download link', { id: toastId });
+        }
       }
     } catch (e) {
       toast.error('Download failed', { id: toastId });
@@ -210,7 +231,7 @@ export default function FilesPage() {
     if (file.type === 'folder') {
       navigateToFolder(file.id, file.name);
     } else {
-      // Open file preview by fetching from Telegram
+      // Open file preview
       if (!file.telegramFileId) {
         toast.error('File not available');
         return;
@@ -220,15 +241,29 @@ export default function FilesPage() {
       toast.loading('Loading file...', { id: 'file-loading' });
 
       try {
-        const result = await getFileFromTelegram(file.telegramFileId);
+        let downloadUrl: string | undefined;
 
-        if (result.success && result.downloadUrl) {
+        // BYOD files: download via Render server
+        if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
+          const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
+          if (result.success && result.blobUrl) {
+            downloadUrl = result.blobUrl;
+          }
+        } else {
+          // Managed files: get URL via Bot API
+          const result = await getFileFromTelegram(file.telegramFileId);
+          if (result.success && result.downloadUrl) {
+            downloadUrl = result.downloadUrl;
+          }
+        }
+
+        if (downloadUrl) {
           const previewType = getPreviewType(file.name, file.mimeType);
 
           setPreviewFile({
             id: file.id,
             name: file.name,
-            url: result.downloadUrl,
+            url: downloadUrl,
             type: previewType,
             mimeType: file.mimeType,
           });

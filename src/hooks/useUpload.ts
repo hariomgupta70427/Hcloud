@@ -46,7 +46,7 @@ export function useUpload(): UseUploadReturn {
     const uploadSingleFile = useCallback(async (
         file: File,
         index: number
-    ): Promise<TelegramUploadResult> => {
+    ): Promise<TelegramUploadResult & { messageId?: number }> => {
         // Check file size based on storage mode
         if (file.size > maxFileSize) {
             const sizeMB = Math.round(maxFileSize / (1024 * 1024));
@@ -59,46 +59,34 @@ export function useUpload(): UseUploadReturn {
 
         updateFile(index, { status: 'uploading', progress: 0 });
 
-        // BYOD users: Smart routing based on file size
-        // - Files ≤50MB: Use Bot API (fast, no cold start)
-        // - Files >50MB: Use Render chunked upload (handles large files)
+        // BYOD users: ALL uploads go through Render server (to user's Saved Messages)
         if (isBYOD && user?.byodConfig?.telegramSession) {
-            const BYOD_BOT_API_LIMIT = 50 * 1024 * 1024; // 50MB
+            console.log(`[useUpload] BYOD upload via Render: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+            try {
+                const result = await uploadFileChunked(
+                    file,
+                    user.byodConfig.telegramSession,
+                    (progress) => {
+                        updateFile(index, { progress: progress.percent });
+                    }
+                );
 
-            if (file.size <= BYOD_BOT_API_LIMIT) {
-                // Small file: Use Bot API (same as managed, but with BYOD credentials)
-                console.log('[useUpload] BYOD small file (≤50MB): Using Bot API');
-                return await smartUploadToTelegram(file, (progress) => {
-                    updateFile(index, { progress });
-                });
-            } else {
-                // Large file: Use Render chunked upload
-                console.log('[useUpload] BYOD large file (>50MB): Using Render chunked upload');
-                try {
-                    const result = await uploadFileChunked(
-                        file,
-                        user.byodConfig.telegramSession,
-                        (progress) => {
-                            updateFile(index, { progress: progress.percent });
-                        }
-                    );
-
-                    return {
-                        success: result.success,
-                        fileId: result.fileId,
-                        error: result.error,
-                    };
-                } catch (error: any) {
-                    console.error('[useUpload] Chunked upload error:', error);
-                    return {
-                        success: false,
-                        error: error.message || 'Server-side upload failed',
-                    };
-                }
+                return {
+                    success: result.success,
+                    fileId: result.fileId,
+                    messageId: result.messageId,
+                    error: result.error,
+                };
+            } catch (error: any) {
+                console.error('[useUpload] BYOD upload error:', error);
+                return {
+                    success: false,
+                    error: error.message || 'Upload failed',
+                };
             }
         } else {
-            // Managed: Always use Bot API
-            console.log('[useUpload] Using Bot API upload for managed storage');
+            // Managed: Upload via Bot API
+            console.log('[useUpload] Managed upload via Bot API');
             return await smartUploadToTelegram(file, (progress) => {
                 updateFile(index, { progress });
             });
@@ -234,12 +222,14 @@ export function useUpload(): UseUploadReturn {
                 }
 
                 if (result.success && result.fileId) {
-                    // Save to Firestore with thumbnail
+                    // Save to Firestore with thumbnail and storage type
                     await addFileRecord({
                         name: file.name,
                         mimeType: file.type || 'application/octet-stream',
                         size: file.size,
                         telegramFileId: result.fileId,
+                        telegramMessageId: (result as any).messageId, // BYOD: message ID for download
+                        storageType: isBYOD ? 'byod' : 'managed',
                         parentId: currentFolder,
                         userId: user.id,
                         thumbnail: thumbnail

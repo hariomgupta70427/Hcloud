@@ -1,17 +1,17 @@
 /**
- * Chunked Upload Service for BYOD
- * Splits large files into chunks and uploads via dedicated Render server
- * Used ONLY for files >50MB (to avoid cold start delays for small files)
+ * Chunked Upload & Download Service for BYOD
+ * Handles uploads via Render server and downloads for BYOD files
  */
 
 // Chunk size: 4MB (safe for most servers)
 const CHUNK_SIZE = 4 * 1024 * 1024;
 
 // Upload server URL - Render deployment
-const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud.onrender.com';
+export const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud.onrender.com';
 
 const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
+const API_DOWNLOAD = `${UPLOAD_SERVER_URL}/download`;
 
 export interface ChunkedUploadResult {
     success: boolean;
@@ -236,4 +236,35 @@ export async function uploadFileChunked(
     }
 
     return finalResult;
+}
+
+/**
+ * Download a BYOD file from the Render server
+ * Returns a blob URL that can be used for preview/download
+ */
+export async function downloadBYODFile(
+    messageId: number,
+    session: string,
+): Promise<{ success: boolean; blobUrl?: string; error?: string }> {
+    try {
+        console.log(`[BYOD Download] Fetching message ${messageId}...`);
+        const response = await fetch(API_DOWNLOAD, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageId, session }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            return { success: false, error: errorData.error || `Download failed (${response.status})` };
+        }
+
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        console.log(`[BYOD Download] Success: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
+        return { success: true, blobUrl };
+    } catch (error: any) {
+        console.error('[BYOD Download] Error:', error);
+        return { success: false, error: error.message || 'Download failed' };
+    }
 }

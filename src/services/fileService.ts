@@ -24,6 +24,8 @@ export interface FileItem {
     mimeType?: string;
     size?: number;
     telegramFileId?: string;
+    telegramMessageId?: number; // Message ID for BYOD files (used for download)
+    storageType?: 'managed' | 'byod'; // How file was uploaded
     parentId: string | null;
     userId: string;
     isStarred: boolean;
@@ -52,6 +54,8 @@ export interface UploadFileData {
     mimeType: string;
     size: number;
     telegramFileId: string;
+    telegramMessageId?: number; // Message ID for BYOD download
+    storageType?: 'managed' | 'byod';
     parentId: string | null;
     userId: string;
     thumbnail?: string;
@@ -69,6 +73,8 @@ function docToFileItem(docId: string, data: any): FileItem {
         mimeType: data.mimeType,
         size: data.size,
         telegramFileId: data.telegramFileId,
+        telegramMessageId: data.telegramMessageId,
+        storageType: data.storageType,
         parentId: data.parentId,
         userId: data.userId,
         isStarred: data.isStarred || false,
@@ -251,9 +257,15 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         isStarred: false,
         isShared: false,
         path,
+        storageType: data.storageType || 'managed',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
     };
+
+    // Store messageId for BYOD files (needed for download)
+    if (data.telegramMessageId) {
+        fileData.telegramMessageId = data.telegramMessageId;
+    }
 
     if (data.thumbnail) {
         fileData.thumbnail = data.thumbnail;

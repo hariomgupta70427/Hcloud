@@ -6,10 +6,7 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { TelegramClient, sessions } from 'telegram';
+import { TelegramClient, sessions, Api } from 'telegram';
 const { StringSession } = sessions;
 
 // Environment variables
@@ -30,8 +27,7 @@ const app = express();
 // CORS configuration
 const allowedOrigins = CORS_ORIGIN.split(',').map(o => o.trim());
 app.use(cors({
-    origin: (origin, callback) => {
-        // Allow requests with no origin (mobile apps, curl, etc.)
+    origin: (origin: string | undefined, callback: any) => {
         if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
             callback(null, true);
@@ -47,7 +43,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 
 // Health check endpoint
-app.get('/health', (_, res) => {
+app.get('/health', (_: any, res: any) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -92,6 +88,21 @@ function cleanupStaleSessions() {
 // Run cleanup every 30 minutes
 setInterval(cleanupStaleSessions, 30 * 60 * 1000);
 
+// Helper: Create and connect a Telegram client
+async function createTelegramClient(session: string): Promise<TelegramClient> {
+    const client = new TelegramClient(
+        new StringSession(session),
+        TELEGRAM_API_ID,
+        TELEGRAM_API_HASH,
+        {
+            connectionRetries: 5,
+            useWSS: true,
+        }
+    );
+    await client.connect();
+    return client;
+}
+
 // ============================================
 // CHUNKED UPLOAD ENDPOINT
 // ============================================
@@ -114,8 +125,6 @@ app.post('/upload/chunk', async (req: Request, res: Response) => {
             });
         }
 
-        console.log(`📦 Chunk ${chunkIndex + 1}/${totalChunks} for ${uploadId}`);
-
         // Get or create upload session
         let uploadSession = uploadSessions.get(uploadId);
         if (!uploadSession) {
@@ -131,10 +140,9 @@ app.post('/upload/chunk', async (req: Request, res: Response) => {
                 lastActivity: Date.now(),
             };
             uploadSessions.set(uploadId, uploadSession);
-            console.log(`📂 Created new upload session: ${uploadId}`);
+            console.log(`📂 New session: ${uploadId} (${fileName})`);
         }
 
-        // Update last activity
         uploadSession.lastActivity = Date.now();
 
         // Store chunk if not already received
@@ -146,7 +154,6 @@ app.post('/upload/chunk', async (req: Request, res: Response) => {
         }
 
         const progress = Math.round((uploadSession.receivedCount / totalChunks) * 100);
-        console.log(`📊 Progress: ${uploadSession.receivedCount}/${totalChunks} (${progress}%)`);
 
         return res.json({
             success: true,
@@ -181,8 +188,6 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
     if (uploadSession.receivedCount < uploadSession.totalChunks) {
         return res.status(400).json({
             error: `Not all chunks received: ${uploadSession.receivedCount}/${uploadSession.totalChunks}`,
-            received: uploadSession.receivedCount,
-            expected: uploadSession.totalChunks,
         });
     }
 
@@ -193,7 +198,7 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         }
     }
 
-    console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks for ${uploadId}...`);
+    console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks...`);
 
     try {
         // Assemble file from chunks (in order)
@@ -202,119 +207,183 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
             orderedChunks.push(uploadSession.chunks.get(i)!);
         }
         const fileBuffer = Buffer.concat(orderedChunks);
+        console.log(`📄 File: ${uploadSession.fileName} (${(fileBuffer.length / 1024 / 1024).toFixed(1)}MB)`);
 
-        console.log(`📄 Assembled file: ${uploadSession.fileName} (${fileBuffer.length} bytes)`);
-
-        // Clear chunks from memory to free up RAM
+        // Free chunk memory immediately
         uploadSession.chunks.clear();
 
-        // Create Telegram client
+        // Connect to Telegram
         console.log('🔌 Connecting to Telegram...');
-        const client = new TelegramClient(
-            new StringSession(session),
-            TELEGRAM_API_ID,
-            TELEGRAM_API_HASH,
-            {
-                connectionRetries: 10,
-                useWSS: true,
-            }
-        );
+        const client = await createTelegramClient(session);
 
-        await client.connect();
-
-        // Verify session
         const me = await client.getMe();
         if (!me) {
             uploadSessions.delete(uploadId);
-            return res.status(401).json({ error: 'Invalid Telegram session. Please re-authenticate.' });
+            return res.status(401).json({ error: 'Invalid Telegram session.' });
         }
-
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
-        console.log('📤 Uploading to Telegram Saved Messages...');
 
-        // Write buffer to temp file (GramJS works best with file paths in Node.js)
-        const tempDir = os.tmpdir();
-        const tempFilePath = path.join(tempDir, `hcloud_upload_${uploadId}_${uploadSession.fileName}`);
+        // Upload buffer directly to Telegram (no temp file!)
+        console.log('📤 Uploading to Telegram...');
+        const toUpload = await client.uploadFile({
+            file: {
+                name: uploadSession.fileName,
+                buffer: fileBuffer,
+            } as any,
+            workers: 4,
+        });
 
-        console.log(`📁 Writing to temp file: ${tempFilePath}`);
-        fs.writeFileSync(tempFilePath, fileBuffer);
-        console.log(`📁 Temp file written (${fileBuffer.length} bytes)`);
+        // Send to Saved Messages
+        const result = await client.invoke(
+            new Api.messages.SendMedia({
+                peer: 'me',
+                media: new Api.InputMediaUploadedDocument({
+                    file: toUpload,
+                    mimeType: uploadSession.mimeType || 'application/octet-stream',
+                    attributes: [
+                        new Api.DocumentAttributeFilename({
+                            fileName: uploadSession.fileName,
+                        }),
+                    ],
+                }),
+                message: '',
+                randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
+            })
+        );
 
-        try {
-            // Upload using file path - the most reliable method for Node.js
-            const result = await client.sendFile('me', {
-                file: tempFilePath,
-                caption: '',
-                forceDocument: true,
-                progressCallback: (progress: number) => {
-                    const percent = Math.round(progress * 100);
-                    if (percent % 10 === 0) {
-                        console.log(`📤 Telegram upload: ${percent}%`);
+        console.log('✅ Upload complete!');
+
+        // Extract messageId and fileId
+        let messageId = 0;
+        let fileId = '';
+        const updates = result as any;
+        if (updates.updates) {
+            for (const update of updates.updates) {
+                if (update.message) {
+                    messageId = update.message.id;
+                    const media = update.message.media;
+                    if (media?.document) {
+                        fileId = media.document.id.toString();
                     }
-                },
-            });
-
-            console.log(`✅ Upload complete! Message ID: ${result.id}`);
-
-            // Extract file ID
-            let fileId = '';
-            if (result.media) {
-                const media = result.media as any;
-                if (media.document) {
-                    fileId = media.document.id.toString();
-                } else if (media.photo) {
-                    fileId = `photo_${media.photo.id}`;
+                    break;
                 }
             }
-
-            // Disconnect and cleanup
-            await client.disconnect();
-            uploadSessions.delete(uploadId);
-
-            // Clean up temp file
-            try {
-                fs.unlinkSync(tempFilePath);
-                console.log(`🧹 Temp file cleaned up`);
-            } catch (e) {
-                console.warn(`⚠️ Failed to delete temp file: ${tempFilePath}`);
-            }
-
-            return res.json({
-                success: true,
-                messageId: result.id,
-                fileId,
-                fileName: uploadSession.fileName,
-                fileSize: fileBuffer.length,
-            });
-
-        } catch (error: any) {
-            console.error('❌ Upload error:', error);
-
-            // Clean up temp file on error
-            try {
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-            } catch (e) {
-                // Ignore cleanup errors
-            }
-
-            throw error; // Re-throw to outer catch
         }
+
+        await client.disconnect();
+        uploadSessions.delete(uploadId);
+
+        console.log(`✅ MessageId: ${messageId}, FileId: ${fileId}`);
+
+        return res.json({
+            success: true,
+            messageId,
+            fileId,
+            fileName: uploadSession.fileName,
+            fileSize: fileBuffer.length,
+        });
 
     } catch (error: any) {
         console.error('❌ Finalize error:', error);
-
-        // Clean up session on error
         uploadSessions.delete(uploadId);
 
         if (error.message?.includes('AUTH_KEY_UNREGISTERED') ||
             error.message?.includes('SESSION_REVOKED')) {
-            return res.status(401).json({ error: 'Session expired. Please re-authenticate in Settings.' });
+            return res.status(401).json({ error: 'Session expired. Please re-authenticate.' });
         }
 
-        return res.status(500).json({ error: error.message || 'Upload finalization failed' });
+        return res.status(500).json({ error: error.message || 'Upload failed' });
     }
+});
+
+// ============================================
+// DOWNLOAD ENDPOINT (for BYOD files)
+// ============================================
+
+app.post('/download', async (req: Request, res: Response) => {
+    const { messageId, session } = req.body;
+
+    if (!messageId || !session) {
+        return res.status(400).json({ error: 'Missing messageId or session' });
+    }
+
+    let client: TelegramClient | null = null;
+
+    try {
+        console.log(`📥 Download request for message ${messageId}`);
+        client = await createTelegramClient(session);
+
+        // Get the message from Saved Messages
+        const messages = await client.getMessages('me', { ids: [messageId] });
+
+        if (!messages || messages.length === 0 || !messages[0]) {
+            return res.status(404).json({ error: 'Message not found' });
+        }
+
+        const message = messages[0];
+        if (!message.media) {
+            return res.status(404).json({ error: 'No media in message' });
+        }
+
+        // Download the file
+        console.log('📥 Downloading from Telegram...');
+        const buffer = await client.downloadMedia(message, {}) as Buffer;
+
+        if (!buffer) {
+            return res.status(404).json({ error: 'Failed to download file' });
+        }
+
+        // Determine content type
+        let contentType = 'application/octet-stream';
+        let fileName = 'file';
+        const media = message.media as any;
+        if (media.document) {
+            contentType = media.document.mimeType || contentType;
+            for (const attr of media.document.attributes || []) {
+                if (attr.fileName) {
+                    fileName = attr.fileName;
+                }
+            }
+        }
+
+        console.log(`📥 Downloaded: ${fileName} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+
+        await client.disconnect();
+
+        // Send file as response
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Length', buffer.length.toString());
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return res.send(buffer);
+
+    } catch (error: any) {
+        console.error('❌ Download error:', error);
+        if (client) {
+            try { await client.disconnect(); } catch (e) { /* ignore */ }
+        }
+
+        if (error.message?.includes('AUTH_KEY_UNREGISTERED') ||
+            error.message?.includes('SESSION_REVOKED')) {
+            return res.status(401).json({ error: 'Session expired.' });
+        }
+
+        return res.status(500).json({ error: error.message || 'Download failed' });
+    }
+});
+
+// ============================================
+// STREAM URL ENDPOINT (returns a temporary download URL)
+// ============================================
+
+app.post('/download/url', async (req: Request, res: Response) => {
+    // This endpoint returns info needed to build a download request
+    // The frontend will use this to create blob URLs for preview
+    return res.json({
+        method: 'POST',
+        endpoint: '/download',
+        description: 'Send messageId and session to download file',
+    });
 });
 
 // ============================================
@@ -336,8 +405,6 @@ app.get('/upload/status/:uploadId', (req: Request, res: Response) => {
         totalChunks: session.totalChunks,
         totalSize: session.totalSize,
         progress: Math.round((session.receivedCount / session.totalChunks) * 100),
-        createdAt: new Date(session.createdAt).toISOString(),
-        lastActivity: new Date(session.lastActivity).toISOString(),
     });
 });
 
@@ -350,8 +417,8 @@ app.delete('/upload/:uploadId', (req: Request, res: Response) => {
 
     if (uploadSessions.has(uploadId)) {
         uploadSessions.delete(uploadId);
-        console.log(`🗑️ Cancelled upload session: ${uploadId}`);
-        return res.json({ success: true, message: 'Upload cancelled' });
+        console.log(`🗑️ Cancelled: ${uploadId}`);
+        return res.json({ success: true });
     }
 
     return res.status(404).json({ error: 'Upload session not found' });
@@ -361,7 +428,7 @@ app.delete('/upload/:uploadId', (req: Request, res: Response) => {
 // SERVER STATS ENDPOINT
 // ============================================
 
-app.get('/stats', (_, res) => {
+app.get('/stats', (_: any, res: any) => {
     const sessions = Array.from(uploadSessions.values());
     const totalMemoryUsed = sessions.reduce((sum, s) => sum + s.totalSize, 0);
 
@@ -393,8 +460,7 @@ app.listen(PORT, () => {
     console.log('🚀 ================================');
     console.log(`   Port: ${PORT}`);
     console.log(`   CORS: ${allowedOrigins.join(', ')}`);
-    console.log(`   Telegram API ID: ${TELEGRAM_API_ID ? '✅ Set' : '❌ Missing'}`);
-    console.log(`   Telegram API Hash: ${TELEGRAM_API_HASH ? '✅ Set' : '❌ Missing'}`);
+    console.log(`   API: ${TELEGRAM_API_ID ? '✅' : '❌'}`);
     console.log('🚀 ================================');
     console.log('');
 });
