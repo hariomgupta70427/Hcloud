@@ -107,6 +107,7 @@ export async function signIn(email: string, password: string): Promise<UserData>
       phone: data.phone,
       avatar: data.avatar || user.photoURL || undefined,
       storageMode: data.storageMode || 'managed',
+      byodConfig: data.byodConfig, // Persist BYOD config across logins
     };
   }
 
@@ -140,6 +141,7 @@ export async function signInWithGoogle(): Promise<UserData> {
       phone: data.phone,
       avatar: data.avatar || user.photoURL || undefined,
       storageMode: data.storageMode || 'managed',
+      byodConfig: data.byodConfig, // Persist BYOD config across logins
     };
   }
 
