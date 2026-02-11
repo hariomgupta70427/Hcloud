@@ -43,7 +43,7 @@ app.use(cors({
 }));
 
 // Parse JSON with high limit for chunks
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 // Health check endpoint
 app.get('/health', (_: any, res: any) => {
@@ -53,6 +53,59 @@ app.get('/health', (_: any, res: any) => {
         uptime: process.uptime(),
     });
 });
+
+// ============================================
+// TELEGRAM CLIENT CACHE
+// Reuse connections to avoid reconnecting every time
+// ============================================
+
+interface CachedClient {
+    client: TelegramClient;
+    lastUsed: number;
+}
+
+const clientCache = new Map<string, CachedClient>();
+
+// Clean up idle clients (unused for 10 minutes)
+setInterval(() => {
+    const tenMinAgo = Date.now() - 10 * 60 * 1000;
+    for (const [key, cached] of clientCache.entries()) {
+        if (cached.lastUsed < tenMinAgo) {
+            console.log(`🔌 Disconnecting idle client: ${key.substring(0, 20)}...`);
+            cached.client.disconnect().catch(() => { });
+            clientCache.delete(key);
+        }
+    }
+}, 60 * 1000);
+
+// Get or create a Telegram client (cached for speed)
+async function getOrCreateClient(session: string): Promise<TelegramClient> {
+    const cacheKey = session.substring(0, 50); // Use first 50 chars as key
+
+    const cached = clientCache.get(cacheKey);
+    if (cached) {
+        cached.lastUsed = Date.now();
+        // Verify still connected
+        try {
+            await cached.client.getMe();
+            return cached.client;
+        } catch {
+            // Connection lost, recreate
+            clientCache.delete(cacheKey);
+        }
+    }
+
+    const client = new TelegramClient(
+        new StringSession(session),
+        TELEGRAM_API_ID,
+        TELEGRAM_API_HASH,
+        { connectionRetries: 5, useWSS: true }
+    );
+    await client.connect();
+
+    clientCache.set(cacheKey, { client, lastUsed: Date.now() });
+    return client;
+}
 
 // ============================================
 // UPLOAD SESSION MANAGEMENT
@@ -74,7 +127,7 @@ interface UploadSession {
 const uploadSessions = new Map<string, UploadSession>();
 
 // Clean up stale sessions (older than 2 hours)
-function cleanupStaleSessions() {
+setInterval(() => {
     const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
     let cleaned = 0;
     for (const [id, session] of uploadSessions.entries()) {
@@ -86,24 +139,39 @@ function cleanupStaleSessions() {
     if (cleaned > 0) {
         console.log(`🧹 Cleaned up ${cleaned} stale upload sessions`);
     }
-}
+}, 30 * 60 * 1000);
 
-// Run cleanup every 30 minutes
-setInterval(cleanupStaleSessions, 30 * 60 * 1000);
+// ============================================
+// HELPER: Build file attributes for Telegram
+// ============================================
 
-// Helper: Create and connect a Telegram client
-async function createTelegramClient(session: string): Promise<TelegramClient> {
-    const client = new TelegramClient(
-        new StringSession(session),
-        TELEGRAM_API_ID,
-        TELEGRAM_API_HASH,
-        {
-            connectionRetries: 5,
-            useWSS: true,
-        }
-    );
-    await client.connect();
-    return client;
+function buildFileAttributes(fileName: string, mimeType: string): Api.TypeDocumentAttribute[] {
+    const attrs: Api.TypeDocumentAttribute[] = [
+        new Api.DocumentAttributeFilename({ fileName })
+    ];
+
+    // Audio files: add audio attribute so Telegram shows them as music/audio
+    if (mimeType.startsWith('audio/')) {
+        attrs.push(new Api.DocumentAttributeAudio({
+            duration: 0, // unknown duration
+            title: fileName.replace(/\.[^.]+$/, ''), // filename without extension
+            performer: '',
+            voice: false,
+        }));
+    }
+
+    // Video files: add video attribute
+    if (mimeType.startsWith('video/')) {
+        attrs.push(new Api.DocumentAttributeVideo({
+            duration: 0,
+            w: 1920,
+            h: 1080,
+            supportsStreaming: true,
+            roundMessage: false,
+        }));
+    }
+
+    return attrs;
 }
 
 // ============================================
@@ -143,7 +211,10 @@ app.post('/upload/chunk', async (req: Request, res: Response) => {
                 lastActivity: Date.now(),
             };
             uploadSessions.set(uploadId, uploadSession);
-            console.log(`📂 New session: ${uploadId} (${fileName})`);
+            console.log(`📂 New session: ${uploadId} (${fileName}, ${mimeType})`);
+
+            // Pre-warm Telegram connection while chunks upload
+            getOrCreateClient(session).catch(() => { });
         }
 
         uploadSession.lastActivity = Date.now();
@@ -201,7 +272,9 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
         }
     }
 
-    console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks...`);
+    const fileName = uploadSession.fileName;
+    const mimeType = uploadSession.mimeType;
+    console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks for ${fileName}...`);
 
     try {
         // Assemble file from chunks (in order)
@@ -210,64 +283,53 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
             orderedChunks.push(uploadSession.chunks.get(i)!);
         }
         const fileBuffer = Buffer.concat(orderedChunks);
-        console.log(`📄 File: ${uploadSession.fileName} (${(fileBuffer.length / 1024 / 1024).toFixed(1)}MB)`);
+        const fileSize = fileBuffer.length;
+        console.log(`📄 Assembled: ${(fileSize / 1024 / 1024).toFixed(1)}MB`);
 
         // Free chunk memory immediately
         uploadSession.chunks.clear();
 
-        // Connect to Telegram
-        console.log('🔌 Connecting to Telegram...');
-        const client = await createTelegramClient(session);
+        // Write to temp file for GramJS
+        const tempPath = path.join(os.tmpdir(), `hcloud_${uploadId}_${Date.now()}`);
+        fs.writeFileSync(tempPath, fileBuffer);
+
+        // Use cached Telegram client (pre-warmed during chunk upload)
+        console.log('🔌 Getting Telegram client...');
+        const client = await getOrCreateClient(session);
 
         const me = await client.getMe();
         if (!me) {
+            fs.unlinkSync(tempPath);
             uploadSessions.delete(uploadId);
             return res.status(401).json({ error: 'Invalid Telegram session.' });
         }
         console.log(`✅ Connected as: ${(me as any).username || (me as any).firstName}`);
 
-        // Write buffer to temp file for GramJS (most reliable method)
-        console.log('📤 Writing temp file for upload...');
-        const tempDir = os.tmpdir();
-        const tempPath = path.join(tempDir, `hcloud_${uploadId}_${Date.now()}`);
-        fs.writeFileSync(tempPath, fileBuffer);
-
-        // Free buffer memory now that it's on disk
-        const fileSize = fileBuffer.length;
-        const fileName = uploadSession.fileName;
-        const mimeType = uploadSession.mimeType;
-
+        // Upload file to Telegram
         console.log('📤 Uploading to Telegram...');
-        let toUpload;
+        let toUpload: any;
         try {
-            // Dynamic import of CustomFile to avoid build issues
             const { CustomFile } = await import('telegram/client/uploads');
-            const customFile = new CustomFile(
-                fileName,
-                fileSize,
-                tempPath  // use file path instead of buffer
-            );
+            const customFile = new CustomFile(fileName, fileSize, tempPath);
             toUpload = await client.uploadFile({
                 file: customFile,
-                workers: 4,
+                workers: 8,  // More workers = faster upload
             });
         } finally {
-            // Always clean up temp file
             try { fs.unlinkSync(tempPath); } catch (e) { /* ignore */ }
         }
 
-        // Send to Saved Messages
+        // Build proper file attributes (audio, video, etc.)
+        const attributes = buildFileAttributes(fileName, mimeType);
+
+        // Send to Saved Messages with proper attributes
         const result = await client.invoke(
             new Api.messages.SendMedia({
                 peer: 'me',
                 media: new Api.InputMediaUploadedDocument({
                     file: toUpload,
                     mimeType: mimeType || 'application/octet-stream',
-                    attributes: [
-                        new Api.DocumentAttributeFilename({
-                            fileName: fileName,
-                        }),
-                    ],
+                    attributes,
                 }),
                 message: '',
                 randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
@@ -293,17 +355,15 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
             }
         }
 
-        await client.disconnect();
         uploadSessions.delete(uploadId);
-
         console.log(`✅ MessageId: ${messageId}, FileId: ${fileId}`);
 
         return res.json({
             success: true,
             messageId,
             fileId,
-            fileName: fileName,
-            fileSize: fileSize,
+            fileName,
+            fileSize,
         });
 
     } catch (error: any) {
@@ -330,11 +390,9 @@ app.post('/download', async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'Missing messageId or session' });
     }
 
-    let client: TelegramClient | null = null;
-
     try {
         console.log(`📥 Download request for message ${messageId}`);
-        client = await createTelegramClient(session);
+        const client = await getOrCreateClient(session);
 
         // Get the message from Saved Messages
         const messages = await client.getMessages('me', { ids: [messageId] });
@@ -358,33 +416,28 @@ app.post('/download', async (req: Request, res: Response) => {
 
         // Determine content type
         let contentType = 'application/octet-stream';
-        let fileName = 'file';
+        let dlFileName = 'file';
         const media = message.media as any;
         if (media.document) {
             contentType = media.document.mimeType || contentType;
             for (const attr of media.document.attributes || []) {
                 if (attr.fileName) {
-                    fileName = attr.fileName;
+                    dlFileName = attr.fileName;
                 }
             }
         }
 
-        console.log(`📥 Downloaded: ${fileName} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
-
-        await client.disconnect();
+        console.log(`📥 Downloaded: ${dlFileName} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
 
         // Send file as response
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(dlFileName)}"`);
         res.setHeader('Content-Length', buffer.length.toString());
         res.setHeader('Cache-Control', 'private, max-age=3600');
         return res.send(buffer);
 
     } catch (error: any) {
         console.error('❌ Download error:', error);
-        if (client) {
-            try { await client.disconnect(); } catch (e) { /* ignore */ }
-        }
 
         if (error.message?.includes('AUTH_KEY_UNREGISTERED') ||
             error.message?.includes('SESSION_REVOKED')) {
@@ -393,20 +446,6 @@ app.post('/download', async (req: Request, res: Response) => {
 
         return res.status(500).json({ error: error.message || 'Download failed' });
     }
-});
-
-// ============================================
-// STREAM URL ENDPOINT (returns a temporary download URL)
-// ============================================
-
-app.post('/download/url', async (req: Request, res: Response) => {
-    // This endpoint returns info needed to build a download request
-    // The frontend will use this to create blob URLs for preview
-    return res.json({
-        method: 'POST',
-        endpoint: '/download',
-        description: 'Send messageId and session to download file',
-    });
 });
 
 // ============================================
@@ -457,6 +496,7 @@ app.get('/stats', (_: any, res: any) => {
 
     res.json({
         activeSessions: uploadSessions.size,
+        cachedClients: clientCache.size,
         totalMemoryUsedMB: Math.round(totalMemoryUsed / 1024 / 1024 * 100) / 100,
         uptime: process.uptime(),
         memoryUsage: process.memoryUsage(),

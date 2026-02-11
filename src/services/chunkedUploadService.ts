@@ -3,8 +3,8 @@
  * Handles uploads via Render server and downloads for BYOD files
  */
 
-// Chunk size: 4MB (safe for most servers)
-const CHUNK_SIZE = 4 * 1024 * 1024;
+// Chunk size: 8MB (larger = fewer HTTP requests = faster upload)
+const CHUNK_SIZE = 8 * 1024 * 1024;
 
 // Upload server URL - Render deployment
 export const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud.onrender.com';
