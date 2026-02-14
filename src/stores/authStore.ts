@@ -171,52 +171,38 @@ export const useAuthStore = create<AuthState>()(
       setError: (error) => set({ error }),
 
       // Initialize auth state listener
+      // IMPORTANT: Firebase's onAuthStateChanged only UPDATES user data.
+      // It NEVER triggers logout. Only the explicit logout() action can clear the session.
+      // This ensures PWA and multi-device sessions persist correctly.
       initAuth: () => {
         const persistedUser = get().user;
-        // Only show loading if no persisted user
-        if (!persistedUser) {
+
+        // If we have a persisted user, trust it immediately (no loading state)
+        if (persistedUser) {
+          set({ isAuthenticated: true, isLoading: false });
+        } else {
           set({ isLoading: true });
         }
 
-        let hasReceivedAuthUser = false;
-        let logoutTimeout: ReturnType<typeof setTimeout> | null = null;
-
         const unsubscribe = authService.onAuthStateChange((user) => {
-          // Clear any pending logout timeout
-          if (logoutTimeout) {
-            clearTimeout(logoutTimeout);
-            logoutTimeout = null;
-          }
-
           if (user) {
-            hasReceivedAuthUser = true;
+            // Firebase confirmed user - update with fresh data from Firestore
             set({ user, isAuthenticated: true, isLoading: false });
           } else {
-            // Firebase says no user
-            if (persistedUser && !hasReceivedAuthUser) {
-              // We have a persisted session but Firebase hasn't confirmed yet
-              // This happens on PWA resume - Firebase needs time to restore from IndexedDB
-              // Wait before accepting the logout
-              logoutTimeout = setTimeout(() => {
-                // Double-check: if still no Firebase user after waiting, truly log out
-                const currentAuth = authService.getCurrentUser();
-                if (!currentAuth) {
-                  console.log('Auth: Firebase confirmed no session after timeout, logging out');
-                  set({ user: null, isAuthenticated: false, isLoading: false });
-                }
-              }, 3000); // 3 second grace period for Firebase to restore
-            } else {
-              // No persisted user OR Firebase already confirmed a user before
-              // This is a real logout (user signed out)
-              set({ user: null, isAuthenticated: false, isLoading: false });
+            // Firebase says no user - but we DON'T log out automatically!
+            // This can happen on PWA resume, multi-device, or slow IndexedDB restore.
+            // We only clear loading state if we had no persisted user.
+            if (!get().user) {
+              // No persisted user either - genuinely not logged in
+              set({ isAuthenticated: false, isLoading: false });
             }
+            // If we DO have a persisted user, we keep them logged in.
+            // The only way to log out is the explicit logout() action.
+            set({ isLoading: false });
           }
         });
 
-        return () => {
-          if (logoutTimeout) clearTimeout(logoutTimeout);
-          unsubscribe();
-        };
+        return unsubscribe;
       },
     }),
     {
