@@ -172,21 +172,51 @@ export const useAuthStore = create<AuthState>()(
 
       // Initialize auth state listener
       initAuth: () => {
-        const currentUser = get().user;
-        // Only show loading if no persisted user - prevents PWA logout on reload
-        if (!currentUser) {
+        const persistedUser = get().user;
+        // Only show loading if no persisted user
+        if (!persistedUser) {
           set({ isLoading: true });
         }
 
+        let hasReceivedAuthUser = false;
+        let logoutTimeout: ReturnType<typeof setTimeout> | null = null;
+
         const unsubscribe = authService.onAuthStateChange((user) => {
+          // Clear any pending logout timeout
+          if (logoutTimeout) {
+            clearTimeout(logoutTimeout);
+            logoutTimeout = null;
+          }
+
           if (user) {
+            hasReceivedAuthUser = true;
             set({ user, isAuthenticated: true, isLoading: false });
           } else {
-            set({ user: null, isAuthenticated: false, isLoading: false });
+            // Firebase says no user
+            if (persistedUser && !hasReceivedAuthUser) {
+              // We have a persisted session but Firebase hasn't confirmed yet
+              // This happens on PWA resume - Firebase needs time to restore from IndexedDB
+              // Wait before accepting the logout
+              logoutTimeout = setTimeout(() => {
+                // Double-check: if still no Firebase user after waiting, truly log out
+                const currentAuth = authService.getCurrentUser();
+                if (!currentAuth) {
+                  console.log('Auth: Firebase confirmed no session after timeout, logging out');
+                  set({ user: null, isAuthenticated: false, isLoading: false });
+                }
+              }, 3000); // 3 second grace period for Firebase to restore
+            } else {
+              // No persisted user OR Firebase already confirmed a user before
+              // This is a real logout (user signed out)
+              set({ user: null, isAuthenticated: false, isLoading: false });
+            }
           }
         });
 
-        return unsubscribe;
+        return () => {
+          if (logoutTimeout) clearTimeout(logoutTimeout);
+          unsubscribe();
+        };
       },
     }),
     {
