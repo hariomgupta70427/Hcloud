@@ -12,6 +12,15 @@ export const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'http
 const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
 const API_DOWNLOAD = `${UPLOAD_SERVER_URL}/download`;
+const API_STREAM = `${UPLOAD_SERVER_URL}/stream`;
+
+/**
+ * Get a streaming URL for BYOD audio/video files.
+ * This URL can be used directly as <audio src> or <video src> for instant playback.
+ */
+export function getBYODStreamUrl(messageId: number, session: string): string {
+    return `${API_STREAM}?messageId=${messageId}&session=${encodeURIComponent(session)}`;
+}
 
 export interface ChunkedUploadResult {
     success: boolean;

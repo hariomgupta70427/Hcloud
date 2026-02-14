@@ -380,7 +380,7 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
 });
 
 // ============================================
-// DOWNLOAD ENDPOINT (for BYOD files)
+// DOWNLOAD ENDPOINT (for BYOD files - full download)
 // ============================================
 
 app.post('/download', async (req: Request, res: Response) => {
@@ -445,6 +445,78 @@ app.post('/download', async (req: Request, res: Response) => {
         }
 
         return res.status(500).json({ error: error.message || 'Download failed' });
+    }
+});
+
+// ============================================
+// STREAMING ENDPOINT (GET - for audio/video src)
+// Browser can use this directly as <audio src> or <video src>
+// ============================================
+
+app.get('/stream', async (req: Request, res: Response) => {
+    const messageId = parseInt(req.query.messageId as string);
+    const session = req.query.session as string;
+
+    if (!messageId || !session) {
+        return res.status(400).json({ error: 'Missing messageId or session query params' });
+    }
+
+    try {
+        console.log(`🎵 Stream request for message ${messageId}`);
+        const client = await getOrCreateClient(session);
+
+        // Get the message from Saved Messages
+        const messages = await client.getMessages('me', { ids: [messageId] });
+
+        if (!messages || messages.length === 0 || !messages[0]) {
+            return res.status(404).json({ error: 'Message not found' });
+        }
+
+        const message = messages[0];
+        if (!message.media) {
+            return res.status(404).json({ error: 'No media in message' });
+        }
+
+        // Get file metadata
+        let contentType = 'application/octet-stream';
+        let streamFileName = 'file';
+        let fileSize = 0;
+        const media = message.media as any;
+        if (media.document) {
+            contentType = media.document.mimeType || contentType;
+            fileSize = media.document.size?.toJSNumber?.() || Number(media.document.size) || 0;
+            for (const attr of media.document.attributes || []) {
+                if (attr.fileName) {
+                    streamFileName = attr.fileName;
+                }
+            }
+        }
+
+        // Download and stream - GramJS doesn't support true chunked download
+        // but we send headers immediately so the browser starts buffering
+        console.log(`🎵 Streaming: ${streamFileName} (${contentType})`);
+
+        const buffer = await client.downloadMedia(message, {}) as Buffer;
+
+        if (!buffer) {
+            return res.status(404).json({ error: 'Failed to download file' });
+        }
+
+        // Set streaming-friendly headers
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', buffer.length.toString());
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(streamFileName)}"`);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        // Allow CORS for streaming
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+
+        return res.send(buffer);
+
+    } catch (error: any) {
+        console.error('❌ Stream error:', error);
+        return res.status(500).json({ error: error.message || 'Stream failed' });
     }
 });
 

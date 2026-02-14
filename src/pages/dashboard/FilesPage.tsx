@@ -19,7 +19,7 @@ import { PreviewModal, getPreviewType, PreviewFile } from '@/components/preview/
 import { FileItem } from '@/services/fileService';
 import * as fileService from '@/services/fileService';
 import { getFileFromTelegram } from '@/services/telegramService';
-import { downloadBYODFile } from '@/services/chunkedUploadService';
+import { downloadBYODFile, getBYODStreamUrl } from '@/services/chunkedUploadService';
 import { useUpload } from '@/hooks/useUpload';
 import { toast } from 'sonner';
 
@@ -237,6 +237,25 @@ export default function FilesPage() {
         return;
       }
 
+      const previewType = getPreviewType(file.name, file.mimeType);
+
+      // BYOD audio/video: use streaming URL for instant playback
+      if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
+        if (previewType === 'audio' || previewType === 'video') {
+          // Instant open with streaming URL - no download needed!
+          const streamUrl = getBYODStreamUrl(file.telegramMessageId, user.byodConfig.telegramSession);
+          setPreviewFile({
+            id: file.id,
+            name: file.name,
+            url: streamUrl,
+            type: previewType,
+            mimeType: file.mimeType,
+          });
+          return;
+        }
+      }
+
+      // For non-streamable files: download blob first
       setIsLoadingPreview(true);
       toast.loading('Loading file...', { id: 'file-loading' });
 
@@ -258,8 +277,6 @@ export default function FilesPage() {
         }
 
         if (downloadUrl) {
-          const previewType = getPreviewType(file.name, file.mimeType);
-
           setPreviewFile({
             id: file.id,
             name: file.name,
