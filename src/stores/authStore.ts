@@ -172,7 +172,11 @@ export const useAuthStore = create<AuthState>()(
 
       // Initialize auth state listener
       initAuth: () => {
-        set({ isLoading: true });
+        const currentUser = get().user;
+        // Only show loading if no persisted user - prevents PWA logout on reload
+        if (!currentUser) {
+          set({ isLoading: true });
+        }
 
         const unsubscribe = authService.onAuthStateChange((user) => {
           if (user) {
