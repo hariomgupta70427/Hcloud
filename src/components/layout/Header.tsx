@@ -1,32 +1,48 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search,
-  LayoutGrid,
-  List,
   Bell,
-  Sun,
   Moon,
-  User,
+  Sun,
+  Grid3X3,
+  List,
   LogOut,
+  User,
   Settings,
-  ChevronDown
+  Menu,
+  X,
 } from 'lucide-react';
-import { useUIStore } from '@/stores/uiStore';
 import { useAuthStore } from '@/stores/authStore';
-import { cn } from '@/lib/utils';
+import { useTheme } from '@/components/ThemeProvider';
 
-export function Header() {
+export default function Header() {
   const navigate = useNavigate();
-  const { theme, setTheme, viewMode, setViewMode, searchQuery, setSearchQuery } = useUIStore();
   const { user, logout } = useAuthStore();
+  const { theme, setTheme } = useTheme();
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
+  // Close user menu on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const handleLogout = async () => {
+    setShowUserMenu(false);
+    await logout();
+    navigate('/auth');
   };
 
   const toggleTheme = () => {
@@ -34,151 +50,144 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 flex items-center justify-between px-6 border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-20">
-      {/* Search */}
-      <div className="flex-1 max-w-xl">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+    <header className="sticky top-0 z-40 h-16 bg-background/80 backdrop-blur-xl border-b border-border/50 flex items-center px-4 lg:px-6 gap-3">
+      {/* Mobile menu toggle */}
+      <button
+        onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+        className="md:hidden p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
+      >
+        <Menu size={20} />
+      </button>
+
+      {/* Search bar — expands on focus */}
+      <div className="flex-1 max-w-xl relative">
+        <motion.div
+          initial={false}
+          animate={{
+            boxShadow: searchFocused
+              ? '0 4px 24px hsl(var(--primary) / 0.12)'
+              : '0 0 0 transparent',
+          }}
+          className="relative"
+        >
+          <Search
+            size={18}
+            className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors duration-200 ${searchFocused ? 'text-primary' : 'text-muted-foreground'
+              }`}
+          />
           <input
             type="text"
-            placeholder="Search files and folders..."
+            placeholder="Search files..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-10 pl-10 pr-4 rounded-xl bg-muted/50 border border-transparent text-foreground placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            className="w-full h-10 pl-10 pr-4 rounded-xl bg-muted/50 border border-border/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:bg-background transition-all duration-200 text-sm"
           />
-        </div>
+        </motion.div>
       </div>
 
-      {/* Right Actions */}
-      <div className="flex items-center gap-2 ml-6">
-        {/* View Toggle */}
-        <div className="flex items-center p-1 rounded-lg bg-muted/50">
+      {/* Right side actions */}
+      <div className="flex items-center gap-1">
+        {/* View toggle — desktop only */}
+        <div className="hidden sm:flex items-center p-1 rounded-lg bg-muted/50 border border-border/30">
           <button
             onClick={() => setViewMode('grid')}
-            className={cn(
-              "p-2 rounded-md transition-colors",
-              viewMode === 'grid'
-                ? 'bg-card text-foreground shadow-sm'
+            className={`p-1.5 rounded-md transition-all duration-200 ${viewMode === 'grid'
+                ? 'bg-background shadow-sm text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
-            )}
+              }`}
           >
-            <LayoutGrid size={18} />
+            <Grid3X3 size={16} />
           </button>
           <button
             onClick={() => setViewMode('list')}
-            className={cn(
-              "p-2 rounded-md transition-colors",
-              viewMode === 'list'
-                ? 'bg-card text-foreground shadow-sm'
+            className={`p-1.5 rounded-md transition-all duration-200 ${viewMode === 'list'
+                ? 'bg-background shadow-sm text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
-            )}
+              }`}
           >
-            <List size={18} />
+            <List size={16} />
           </button>
         </div>
 
-        {/* Notifications */}
-        <div className="relative">
-          <button
-            onClick={() => setShowNotifications(!showNotifications)}
-            className="relative p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-          >
-            <Bell size={20} />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary" />
-          </button>
-
-          <AnimatePresence>
-            {showNotifications && (
-              <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute right-0 top-12 w-80 p-4 rounded-xl bg-card border border-border shadow-xl z-50"
-              >
-                <h3 className="font-semibold text-foreground mb-3">Notifications</h3>
-                <p className="text-sm text-muted-foreground text-center py-6">
-                  No new notifications
-                </p>
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          className="p-2.5 rounded-xl hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200"
+        >
+          <AnimatePresence mode="wait">
+            {theme === 'dark' ? (
+              <motion.div key="sun" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                <Sun size={18} />
+              </motion.div>
+            ) : (
+              <motion.div key="moon" initial={{ rotate: 90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: -90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                <Moon size={18} />
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
-
-        {/* Theme Toggle */}
-        <button
-          onClick={toggleTheme}
-          className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-        >
-          {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
         </button>
 
-        {/* User Menu */}
-        <div className="relative ml-2">
+        {/* Notifications */}
+        <button className="relative p-2.5 rounded-xl hover:bg-accent text-muted-foreground hover:text-foreground transition-all duration-200">
+          <Bell size={18} />
+          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary ring-2 ring-background" />
+        </button>
+
+        {/* User menu */}
+        <div ref={userMenuRef} className="relative">
           <button
             onClick={() => setShowUserMenu(!showUserMenu)}
-            className="flex items-center gap-2 p-1.5 pr-3 rounded-xl hover:bg-muted/50 transition-colors"
+            className="flex items-center gap-2 p-1 pl-1 pr-2 rounded-xl hover:bg-accent transition-colors"
           >
-            <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center text-white text-sm font-medium">
+            <div className="w-8 h-8 rounded-full gradient-primary flex items-center justify-center text-xs font-bold text-white">
               {user?.name?.[0]?.toUpperCase() || 'U'}
             </div>
-            <span className="hidden sm:block text-sm font-medium text-foreground">
-              {user?.name || 'User'}
+            <span className="hidden md:block text-sm font-medium text-foreground max-w-[100px] truncate">
+              {user?.name?.split(' ')[0] || 'User'}
             </span>
-            <ChevronDown size={16} className="text-muted-foreground" />
           </button>
 
+          {/* Dropdown */}
           <AnimatePresence>
             {showUserMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setShowUserMenu(false)}
-                />
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  className="absolute right-0 top-12 w-56 py-2 rounded-xl bg-card border border-border shadow-xl z-50"
+              <motion.div
+                initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                transition={{ duration: 0.15 }}
+                className="absolute right-0 top-full mt-2 w-56 py-2 rounded-xl bg-popover border border-border shadow-xl z-50"
+              >
+                <div className="px-3 py-2 border-b border-border/50 mb-1">
+                  <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                </div>
+
+                <button
+                  onClick={() => { setShowUserMenu(false); navigate('/dashboard/profile'); }}
+                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors"
                 >
-                  <div className="px-4 py-3 border-b border-border">
-                    <p className="font-medium text-foreground">{user?.name}</p>
-                    <p className="text-sm text-muted-foreground">{user?.email}</p>
-                  </div>
-
-                  <div className="py-1">
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        navigate('/dashboard/settings');
-                      }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-muted/50 transition-colors"
-                    >
-                      <Settings size={16} />
-                      Settings
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        navigate('/dashboard/settings');
-                      }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-muted/50 transition-colors"
-                    >
-                      <User size={16} />
-                      Profile
-                    </button>
-                  </div>
-
-                  <div className="border-t border-border py-1">
-                    <button
-                      onClick={handleLogout}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
-                    >
-                      <LogOut size={16} />
-                      Sign out
-                    </button>
-                  </div>
-                </motion.div>
-              </>
+                  <User size={16} className="text-muted-foreground" />
+                  Profile
+                </button>
+                <button
+                  onClick={() => { setShowUserMenu(false); navigate('/dashboard/settings'); }}
+                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+                >
+                  <Settings size={16} className="text-muted-foreground" />
+                  Settings
+                </button>
+                <div className="border-t border-border/50 mt-1 pt-1">
+                  <button
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                  >
+                    <LogOut size={16} />
+                    Sign out
+                  </button>
+                </div>
+              </motion.div>
             )}
           </AnimatePresence>
         </div>

@@ -1,5 +1,5 @@
-import { motion } from 'framer-motion';
-import { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
     X,
     Play,
@@ -11,7 +11,10 @@ import {
     Download,
     Repeat,
     Shuffle,
-    Music
+    Music,
+    Loader2,
+    AlertCircle,
+    RotateCcw,
 } from 'lucide-react';
 
 interface AudioPreviewProps {
@@ -40,6 +43,11 @@ export function AudioPreview({
     const [duration, setDuration] = useState(0);
     const [volume, setVolume] = useState(1);
 
+    // Buffering & error states
+    const [isBuffering, setIsBuffering] = useState(true);
+    const [hasError, setHasError] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
+
     useEffect(() => {
         const audio = audioRef.current;
         if (!audio) return;
@@ -49,15 +57,32 @@ export function AudioPreview({
         const handleEnded = () => {
             if (!isLooping) setIsPlaying(false);
         };
+        const handleCanPlay = () => setIsBuffering(false);
+        const handleWaiting = () => setIsBuffering(true);
+        const handlePlaying = () => setIsBuffering(false);
+        const handleError = () => {
+            setIsBuffering(false);
+            setHasError(true);
+            setIsPlaying(false);
+            setErrorMessage('Failed to load audio. The file may be unavailable.');
+        };
 
         audio.addEventListener('timeupdate', handleTimeUpdate);
         audio.addEventListener('durationchange', handleDurationChange);
         audio.addEventListener('ended', handleEnded);
+        audio.addEventListener('canplay', handleCanPlay);
+        audio.addEventListener('waiting', handleWaiting);
+        audio.addEventListener('playing', handlePlaying);
+        audio.addEventListener('error', handleError);
 
         return () => {
             audio.removeEventListener('timeupdate', handleTimeUpdate);
             audio.removeEventListener('durationchange', handleDurationChange);
             audio.removeEventListener('ended', handleEnded);
+            audio.removeEventListener('canplay', handleCanPlay);
+            audio.removeEventListener('waiting', handleWaiting);
+            audio.removeEventListener('playing', handlePlaying);
+            audio.removeEventListener('error', handleError);
         };
     }, [isLooping]);
 
@@ -76,16 +101,19 @@ export function AudioPreview({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
 
-    const togglePlay = () => {
-        if (audioRef.current) {
+    const togglePlay = useCallback(() => {
+        if (audioRef.current && !hasError) {
             if (isPlaying) {
                 audioRef.current.pause();
             } else {
-                audioRef.current.play();
+                audioRef.current.play().catch(() => {
+                    setHasError(true);
+                    setErrorMessage('Playback failed. Try downloading the file.');
+                });
             }
             setIsPlaying(!isPlaying);
         }
-    };
+    }, [isPlaying, hasError]);
 
     const toggleMute = () => {
         if (audioRef.current) {
@@ -104,6 +132,15 @@ export function AudioPreview({
     const skip = (seconds: number) => {
         if (audioRef.current) {
             audioRef.current.currentTime += seconds;
+        }
+    };
+
+    const handleRetry = () => {
+        setHasError(false);
+        setErrorMessage('');
+        setIsBuffering(true);
+        if (audioRef.current) {
+            audioRef.current.load();
         }
     };
 
@@ -138,12 +175,12 @@ export function AudioPreview({
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-xl"
             onClick={(e) => e.target === e.currentTarget && onClose()}
         >
-            <audio ref={audioRef} src={src} preload="metadata" />
+            <audio ref={audioRef} src={src} preload="auto" crossOrigin="anonymous" />
 
             {/* Close button */}
             <button
                 onClick={onClose}
-                className="absolute top-4 right-4 p-3 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors"
+                className="absolute top-4 right-4 p-3 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
             >
                 <X size={24} />
             </button>
@@ -154,7 +191,7 @@ export function AudioPreview({
                 animate={{ scale: 1, y: 0 }}
                 className="w-full max-w-md mx-4 p-8 rounded-3xl bg-gradient-to-b from-white/10 to-white/5 backdrop-blur-md border border-white/10"
             >
-                {/* Album art */}
+                {/* Album art with buffering/error overlay */}
                 <div className="relative w-48 h-48 mx-auto mb-8 rounded-2xl overflow-hidden shadow-2xl">
                     {cover ? (
                         <img src={cover} alt={title} className="w-full h-full object-cover" />
@@ -163,13 +200,42 @@ export function AudioPreview({
                             <Music size={64} className="text-white/50" />
                         </div>
                     )}
-                    {isPlaying && (
+                    {isPlaying && !isBuffering && (
                         <motion.div
                             className="absolute inset-0 bg-black/20"
                             animate={{ opacity: [0.2, 0.4, 0.2] }}
                             transition={{ duration: 2, repeat: Infinity }}
                         />
                     )}
+
+                    {/* Buffering overlay */}
+                    <AnimatePresence>
+                        {isBuffering && !hasError && (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="absolute inset-0 bg-black/50 flex items-center justify-center"
+                            >
+                                <Loader2 className="w-10 h-10 text-white animate-spin" />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {/* Error overlay */}
+                    <AnimatePresence>
+                        {hasError && (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2"
+                            >
+                                <AlertCircle className="w-10 h-10 text-red-400" />
+                                <span className="text-white/80 text-xs text-center px-4">Load failed</span>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
                 </div>
 
                 {/* Title and artist */}
@@ -177,6 +243,27 @@ export function AudioPreview({
                     <h2 className="text-xl font-bold text-white mb-1 truncate">{title}</h2>
                     {artist && <p className="text-white/60 truncate">{artist}</p>}
                 </div>
+
+                {/* Error message */}
+                <AnimatePresence>
+                    {hasError && (
+                        <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="mb-6 p-3 rounded-xl bg-red-500/15 border border-red-500/25 text-center"
+                        >
+                            <p className="text-red-300 text-sm mb-2">{errorMessage}</p>
+                            <button
+                                onClick={handleRetry}
+                                className="inline-flex items-center gap-1.5 text-sm text-white/80 hover:text-white transition-colors"
+                            >
+                                <RotateCcw size={14} />
+                                Retry
+                            </button>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
 
                 {/* Progress bar */}
                 <div className="mb-6">
@@ -213,12 +300,19 @@ export function AudioPreview({
                         <SkipBack size={28} />
                     </button>
 
-                    {/* Play/Pause */}
+                    {/* Play/Pause with buffering state */}
                     <button
                         onClick={togglePlay}
-                        className="w-16 h-16 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center text-white transition-colors shadow-lg shadow-primary/30"
+                        disabled={hasError}
+                        className="w-16 h-16 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center text-white transition-colors shadow-lg shadow-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        {isPlaying ? <Pause size={28} /> : <Play size={28} className="ml-1" />}
+                        {isBuffering && !hasError ? (
+                            <Loader2 size={24} className="animate-spin" />
+                        ) : isPlaying ? (
+                            <Pause size={28} />
+                        ) : (
+                            <Play size={28} className="ml-1" />
+                        )}
                     </button>
 
                     {/* Skip forward */}

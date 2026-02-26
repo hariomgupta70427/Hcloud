@@ -1,79 +1,65 @@
-import { Link, useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
     Home,
     FolderOpen,
     Star,
-    Share2,
-    Settings
+    Upload,
+    Settings,
 } from 'lucide-react';
-import { usePWA } from '@/hooks/usePWA';
+import { cn } from '@/lib/utils';
 
 const navItems = [
-    { icon: Home, label: 'Home', path: '/dashboard' },
-    { icon: FolderOpen, label: 'Files', path: '/dashboard/files' },
-    { icon: Star, label: 'Starred', path: '/dashboard/starred' },
-    { icon: Share2, label: 'Shared', path: '/dashboard/shared' },
-    { icon: Settings, label: 'Settings', path: '/dashboard/settings' },
+    { path: '/dashboard', icon: Home, label: 'Home' },
+    { path: '/dashboard/files', icon: FolderOpen, label: 'Files' },
+    { path: '/dashboard/starred', icon: Star, label: 'Starred' },
+    { path: '/dashboard/settings', icon: Settings, label: 'Settings' },
 ];
 
-export function MobileBottomNav() {
+export default function MobileBottomNav() {
     const location = useLocation();
-    const { isStandalone } = usePWA();
+    const navigate = useNavigate();
 
-    // Only show on mobile (handled via CSS)
+    const isActive = (path: string) => {
+        if (path === '/dashboard') return location.pathname === '/dashboard';
+        return location.pathname.startsWith(path);
+    };
+
     return (
-        <motion.nav
-            initial={{ y: 100 }}
-            animate={{ y: 0 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            className="mobile-bottom-nav"
-        >
-            <div className="flex items-center justify-around h-full">
+        <nav className="mobile-bottom-nav md:hidden">
+            <div className="flex items-center justify-around h-full px-2 pb-safe">
                 {navItems.map((item) => {
-                    const isActive =
-                        item.path === '/dashboard'
-                            ? location.pathname === '/dashboard'
-                            : location.pathname.startsWith(item.path);
-
+                    const Icon = item.icon;
+                    const active = isActive(item.path);
                     return (
-                        <Link
+                        <button
                             key={item.path}
-                            to={item.path}
-                            className={`flex flex-col items-center justify-center flex-1 h-full transition-colors ${isActive
-                                    ? 'text-primary'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                }`}
+                            onClick={() => navigate(item.path)}
+                            className={cn(
+                                'relative flex flex-col items-center justify-center gap-0.5 min-w-[56px] min-h-[44px] rounded-xl transition-colors',
+                                active ? 'text-primary' : 'text-muted-foreground'
+                            )}
                         >
-                            <motion.div
-                                whileTap={{ scale: 0.9 }}
-                                className="relative"
-                            >
-                                <item.icon
-                                    size={22}
-                                    strokeWidth={isActive ? 2.5 : 2}
+                            {/* Active indicator pill */}
+                            {active && (
+                                <motion.div
+                                    layoutId="mobile-active"
+                                    className="absolute -top-0.5 w-8 h-1 rounded-full bg-primary"
+                                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                                 />
-                                {isActive && (
-                                    <motion.div
-                                        layoutId="mobile-nav-indicator"
-                                        className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-primary"
-                                        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                                    />
+                            )}
+                            <Icon
+                                size={22}
+                                className={cn(
+                                    'transition-all duration-200',
+                                    active ? 'text-primary scale-110' : ''
                                 )}
-                            </motion.div>
-                            <span className={`text-[10px] mt-1 font-medium ${isActive ? 'text-primary' : ''}`}>
-                                {item.label}
-                            </span>
-                        </Link>
+                            />
+                            <span className="text-[10px] font-medium leading-tight">{item.label}</span>
+                        </button>
                     );
                 })}
             </div>
-
-            {/* Safe area padding for notched devices */}
-            <div
-                className="bg-card/95"
-                style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
-            />
-        </motion.nav>
+        </nav>
     );
 }

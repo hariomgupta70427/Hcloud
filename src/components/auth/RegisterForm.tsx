@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -28,7 +28,7 @@ const steps = [
   { id: 3, title: 'Verify', description: 'Confirm your phone' },
 ];
 
-export function RegisterForm() {
+export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void }) {
   const navigate = useNavigate();
   const { register: registerUser, isLoading } = useAuthStore();
   const [currentStep, setCurrentStep] = useState(1);
@@ -647,9 +647,13 @@ export function RegisterForm() {
         className="mt-8 text-center text-sm text-muted-foreground"
       >
         Already have an account?{' '}
-        <Link to="/login" className="text-primary font-medium hover:underline">
+        <button
+          type="button"
+          onClick={onSwitchToLogin}
+          className="text-primary font-medium hover:underline"
+        >
           Sign in
-        </Link>
+        </button>
       </motion.p>
     </motion.div >
   );

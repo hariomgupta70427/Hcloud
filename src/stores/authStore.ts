@@ -7,6 +7,7 @@ interface AuthState {
   user: UserData | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isInitialized: boolean;
   error: string | null;
 
   // Actions
@@ -29,6 +30,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isAuthenticated: false,
       isLoading: false,
+      isInitialized: false,
       error: null,
 
       setUser: (user) => set({ user, isAuthenticated: !!user }),
@@ -179,7 +181,7 @@ export const useAuthStore = create<AuthState>()(
 
         // If we have a persisted user, trust it immediately (no loading state)
         if (persistedUser) {
-          set({ isAuthenticated: true, isLoading: false });
+          set({ isAuthenticated: true, isLoading: false, isInitialized: true });
         } else {
           set({ isLoading: true });
         }
@@ -187,18 +189,18 @@ export const useAuthStore = create<AuthState>()(
         const unsubscribe = authService.onAuthStateChange((user) => {
           if (user) {
             // Firebase confirmed user - update with fresh data from Firestore
-            set({ user, isAuthenticated: true, isLoading: false });
+            set({ user, isAuthenticated: true, isLoading: false, isInitialized: true });
           } else {
             // Firebase says no user - but we DON'T log out automatically!
             // This can happen on PWA resume, multi-device, or slow IndexedDB restore.
             // We only clear loading state if we had no persisted user.
             if (!get().user) {
               // No persisted user either - genuinely not logged in
-              set({ isAuthenticated: false, isLoading: false });
+              set({ isAuthenticated: false, isLoading: false, isInitialized: true });
             }
             // If we DO have a persisted user, we keep them logged in.
             // The only way to log out is the explicit logout() action.
-            set({ isLoading: false });
+            set({ isLoading: false, isInitialized: true });
           }
         });
 

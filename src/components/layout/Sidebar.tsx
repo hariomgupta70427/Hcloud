@@ -1,227 +1,201 @@
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState, useEffect } from 'react';
 import {
-  Cloud,
+  Home,
   FolderOpen,
   Star,
   Clock,
-  Users,
+  Share2,
   Trash2,
   Settings,
-  HelpCircle,
   ChevronLeft,
-  Upload,
-  Infinity as InfinityIcon,
-  HardDrive
+  ChevronRight,
+  Cloud,
+  HardDrive,
 } from 'lucide-react';
-import { useUIStore } from '@/stores/uiStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
-import { getStorageStats } from '@/services/fileService';
 
 const navItems = [
-  { icon: FolderOpen, label: 'My Files', path: '/dashboard/files' },
-  { icon: Star, label: 'Starred', path: '/dashboard/starred' },
-  { icon: Clock, label: 'Recent', path: '/dashboard/recent' },
-  { icon: Users, label: 'Shared', path: '/dashboard/shared' },
-  { icon: Trash2, label: 'Trash', path: '/dashboard/trash' },
+  { path: '/dashboard', icon: Home, label: 'Dashboard' },
+  { path: '/dashboard/files', icon: FolderOpen, label: 'My Files' },
+  { path: '/dashboard/starred', icon: Star, label: 'Starred' },
+  { path: '/dashboard/recent', icon: Clock, label: 'Recent' },
+  { path: '/dashboard/shared', icon: Share2, label: 'Shared' },
+  { path: '/dashboard/trash', icon: Trash2, label: 'Trash' },
+  { path: '/dashboard/settings', icon: Settings, label: 'Settings' },
 ];
 
-const bottomItems = [
-  { icon: Settings, label: 'Settings', path: '/dashboard/settings' },
-  { icon: HelpCircle, label: 'Help', path: '/help' },
-];
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
-
-export function Sidebar() {
+export default function Sidebar() {
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { sidebarCollapsed, toggleSidebar } = useUIStore();
   const { user } = useAuthStore();
-  const [storageStats, setStorageStats] = useState({ totalFiles: 0, totalFolders: 0, totalSize: 0 });
 
-  useEffect(() => {
-    if (user?.id) {
-      getStorageStats(user.id).then(setStorageStats).catch(console.error);
-    }
-  }, [user?.id]);
+  const isActive = (path: string) => {
+    if (path === '/dashboard') return location.pathname === '/dashboard';
+    return location.pathname.startsWith(path);
+  };
 
   return (
     <motion.aside
       initial={false}
-      animate={{ width: sidebarCollapsed ? 72 : 260 }}
-      transition={{ duration: 0.2, ease: 'easeInOut' }}
-      className="h-screen flex flex-col bg-sidebar border-r border-sidebar-border overflow-hidden"
+      animate={{ width: isCollapsed ? 72 : 260 }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+      className="hidden md:flex flex-col h-screen bg-sidebar-background border-r border-sidebar-border relative z-30 overflow-hidden"
     >
-      {/* Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
-        <Link to="/dashboard" className="flex items-center gap-3">
-          <div className="flex-shrink-0 w-9 h-9 rounded-lg gradient-primary flex items-center justify-center shadow-glow">
+      {/* Header */}
+      <div className="flex items-center justify-between h-16 px-4 border-b border-sidebar-border flex-shrink-0">
+        <AnimatePresence mode="wait">
+          {!isCollapsed && (
+            <motion.div
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2 }}
+              className="flex items-center gap-3"
+            >
+              <div className="w-9 h-9 rounded-xl gradient-primary flex items-center justify-center shadow-glow flex-shrink-0">
+                <Cloud className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-lg font-bold text-gradient whitespace-nowrap">HCloud</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {isCollapsed && (
+          <div className="w-9 h-9 rounded-xl gradient-primary flex items-center justify-center shadow-glow mx-auto">
             <Cloud className="w-5 h-5 text-white" />
           </div>
-          <AnimatePresence>
-            {!sidebarCollapsed && (
-              <motion.span
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                className="font-bold text-xl text-foreground whitespace-nowrap overflow-hidden"
-              >
-                HCloud
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </Link>
-        <button
-          onClick={toggleSidebar}
-          className="p-1.5 rounded-lg hover:bg-sidebar-accent transition-colors text-muted-foreground hover:text-foreground"
-        >
-          <motion.div
-            animate={{ rotate: sidebarCollapsed ? 180 : 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ChevronLeft size={18} />
-          </motion.div>
-        </button>
-      </div>
-
-      {/* Upload Button */}
-      <div className="p-4">
-        <motion.button
-          onClick={() => navigate('/dashboard/files')}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          className={cn(
-            "w-full flex items-center justify-center gap-2 rounded-xl gradient-primary text-white font-medium shadow-lg shadow-primary/25 transition-all",
-            sidebarCollapsed ? "h-10 px-2" : "h-11 px-4"
-          )}
-        >
-          <Upload size={18} />
-          <AnimatePresence>
-            {!sidebarCollapsed && (
-              <motion.span
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                className="whitespace-nowrap overflow-hidden"
-              >
-                Upload
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </motion.button>
+        )}
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 space-y-1 overflow-y-auto scrollbar-hide">
+      <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto scrollbar-hide">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path ||
-            (item.path === '/dashboard/files' && location.pathname === '/dashboard');
-
+          const Icon = item.icon;
+          const active = isActive(item.path);
           return (
-            <Link
+            <button
               key={item.path}
-              to={item.path}
+              onClick={() => navigate(item.path)}
               className={cn(
-                "sidebar-item",
-                isActive && "active",
-                sidebarCollapsed && "justify-center px-2"
+                'relative w-full flex items-center rounded-xl transition-all duration-200 group',
+                isCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-3 py-2.5',
+                active
+                  ? 'text-primary'
+                  : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent'
               )}
             >
-              <item.icon size={20} className="flex-shrink-0" />
-              <AnimatePresence>
-                {!sidebarCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 'auto' }}
-                    exit={{ opacity: 0, width: 0 }}
-                    className="whitespace-nowrap overflow-hidden"
-                  >
-                    {item.label}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-            </Link>
+              {/* Active indicator — animated pill */}
+              {active && (
+                <motion.div
+                  layoutId="sidebar-active"
+                  className="absolute inset-0 rounded-xl bg-primary/10 border border-primary/20"
+                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                />
+              )}
+
+              <div className="relative z-10 flex items-center gap-3">
+                <Icon
+                  size={20}
+                  className={cn(
+                    'flex-shrink-0 transition-transform duration-200',
+                    active ? 'text-primary' : 'group-hover:scale-110'
+                  )}
+                />
+                <AnimatePresence mode="wait">
+                  {!isCollapsed && (
+                    <motion.span
+                      initial={{ opacity: 0, width: 0 }}
+                      animate={{ opacity: 1, width: 'auto' }}
+                      exit={{ opacity: 0, width: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className={cn(
+                        'text-sm font-medium whitespace-nowrap overflow-hidden',
+                        active ? 'text-primary' : ''
+                      )}
+                    >
+                      {item.label}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </div>
+            </button>
           );
         })}
       </nav>
 
-      {/* Storage Indicator */}
-      <div className={cn(
-        "mx-3 mb-3 p-3 rounded-xl bg-sidebar-accent",
-        sidebarCollapsed && "p-2"
-      )}>
-        <div className={cn(
-          "flex items-center gap-3",
-          sidebarCollapsed && "justify-center"
-        )}>
-          <div className="flex-shrink-0 p-2 rounded-lg bg-primary/10">
-            {user?.storageMode === 'byod' ? (
-              <HardDrive size={16} className="text-primary" />
-            ) : (
-              <InfinityIcon size={16} className="text-primary" />
-            )}
+      {/* Storage usage */}
+      <AnimatePresence>
+        {!isCollapsed && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="px-4 py-3 border-t border-sidebar-border"
+          >
+            <div className="p-3 rounded-xl bg-sidebar-accent/60">
+              <div className="flex items-center gap-2 mb-2">
+                <HardDrive size={14} className="text-sidebar-foreground/60" />
+                <span className="text-xs font-medium text-sidebar-foreground/80">Storage</span>
+              </div>
+              <div className="h-1.5 bg-sidebar-border rounded-full overflow-hidden mb-1.5">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: '35%' }}
+                  transition={{ duration: 0.8, delay: 0.3 }}
+                  className="h-full rounded-full gradient-primary"
+                />
+              </div>
+              <p className="text-[10px] text-sidebar-foreground/50">
+                {user?.storageMode === 'byod' ? 'Unlimited (BYOD)' : '35% of 50MB used'}
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* User profile area */}
+      <div className="border-t border-sidebar-border px-3 py-3 flex-shrink-0">
+        <button
+          onClick={() => navigate('/dashboard/profile')}
+          className={cn(
+            'w-full flex items-center rounded-xl hover:bg-sidebar-accent transition-colors p-2',
+            isCollapsed ? 'justify-center' : 'gap-3'
+          )}
+        >
+          <div className="w-8 h-8 rounded-full gradient-primary flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+            {user?.name?.[0]?.toUpperCase() || 'U'}
           </div>
           <AnimatePresence>
-            {!sidebarCollapsed && (
+            {!isCollapsed && (
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="min-w-0"
+                initial={{ opacity: 0, width: 0 }}
+                animate={{ opacity: 1, width: 'auto' }}
+                exit={{ opacity: 0, width: 0 }}
+                className="text-left overflow-hidden"
               >
-                <p className="text-xs text-muted-foreground">Storage Used</p>
-                <p className="text-sm font-semibold text-foreground">
-                  {formatBytes(storageStats.totalSize)}
+                <p className="text-sm font-medium text-sidebar-foreground truncate max-w-[140px]">
+                  {user?.name || 'User'}
                 </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {storageStats.totalFiles} files • {storageStats.totalFolders} folders
+                <p className="text-[10px] text-sidebar-foreground/50 truncate max-w-[140px]">
+                  {user?.email}
                 </p>
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
+        </button>
       </div>
 
-      {/* Bottom Navigation */}
-      <div className="px-3 pb-4 space-y-1 border-t border-sidebar-border pt-3">
-        {bottomItems.map((item) => {
-          const isActive = location.pathname === item.path;
-
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={cn(
-                "sidebar-item",
-                isActive && "active",
-                sidebarCollapsed && "justify-center px-2"
-              )}
-            >
-              <item.icon size={20} className="flex-shrink-0" />
-              <AnimatePresence>
-                {!sidebarCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 'auto' }}
-                    exit={{ opacity: 0, width: 0 }}
-                    className="whitespace-nowrap overflow-hidden"
-                  >
-                    {item.label}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-            </Link>
-          );
-        })}
-      </div>
+      {/* Collapse toggle */}
+      <button
+        onClick={() => setIsCollapsed(!isCollapsed)}
+        className="absolute top-1/2 -translate-y-1/2 -right-3 w-6 h-6 rounded-full border border-sidebar-border bg-sidebar-background hover:bg-sidebar-accent flex items-center justify-center shadow-sm z-50 transition-colors"
+      >
+        {isCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+      </button>
     </motion.aside>
   );
 }

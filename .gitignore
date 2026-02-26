@@ -40,3 +40,5 @@ src/services/telegramService.ts
 # Remove these lines once credentials are properly moved to env vars
 # src/lib/firebase.ts
 # src/services/telegramService.ts
+PRD.md
+PRD.md

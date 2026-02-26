@@ -9,42 +9,42 @@
     /* Light Theme */
     --background: 210 20% 98%;
     --foreground: 222 47% 11%;
-    
+
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
-    
+
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    
+
     /* Rose Primary - #d16d7f */
     --primary: 351 52% 63%;
     --primary-foreground: 0 0% 100%;
     --primary-hover: 351 52% 53%;
-    
+
     --secondary: 210 40% 96%;
     --secondary-foreground: 222 47% 11%;
-    
+
     --muted: 210 40% 96%;
     --muted-foreground: 215 16% 47%;
-    
+
     --accent: 210 40% 96%;
     --accent-foreground: 222 47% 11%;
-    
+
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    
+
     --success: 142 71% 45%;
     --success-foreground: 0 0% 100%;
-    
+
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
-    
+
     --border: 214 32% 91%;
     --input: 214 32% 91%;
     --ring: 351 52% 63%;
-    
+
     --radius: 0.75rem;
-    
+
     /* Sidebar */
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5% 26%;
@@ -54,7 +54,7 @@
     --sidebar-accent-foreground: 240 6% 10%;
     --sidebar-border: 220 13% 91%;
     --sidebar-ring: 351 52% 63%;
-    
+
     /* Custom HCloud tokens */
     --gradient-start: 351 52% 63%;
     --gradient-end: 280 60% 50%;
@@ -66,40 +66,40 @@
     /* Dark Theme */
     --background: 222 47% 3%;
     --foreground: 210 40% 96%;
-    
+
     --card: 222 47% 6%;
     --card-foreground: 210 40% 96%;
-    
+
     --popover: 222 47% 6%;
     --popover-foreground: 210 40% 96%;
-    
+
     /* Rose Primary - slightly brighter in dark */
     --primary: 351 60% 65%;
     --primary-foreground: 0 0% 100%;
     --primary-hover: 351 60% 55%;
-    
+
     --secondary: 217 33% 12%;
     --secondary-foreground: 210 40% 96%;
-    
+
     --muted: 217 33% 12%;
     --muted-foreground: 215 20% 55%;
-    
+
     --accent: 217 33% 17%;
     --accent-foreground: 210 40% 96%;
-    
+
     --destructive: 0 63% 45%;
     --destructive-foreground: 210 40% 98%;
-    
+
     --success: 142 71% 40%;
     --success-foreground: 0 0% 100%;
-    
+
     --warning: 38 92% 45%;
     --warning-foreground: 0 0% 100%;
-    
+
     --border: 217 33% 17%;
     --input: 217 33% 17%;
     --ring: 351 60% 65%;
-    
+
     /* Sidebar Dark */
     --sidebar-background: 222 47% 4%;
     --sidebar-foreground: 240 5% 96%;
@@ -109,7 +109,7 @@
     --sidebar-accent-foreground: 240 5% 96%;
     --sidebar-border: 240 4% 12%;
     --sidebar-ring: 351 60% 65%;
-    
+
     /* Custom HCloud tokens - dark */
     --gradient-start: 351 60% 55%;
     --gradient-end: 280 70% 45%;
@@ -122,48 +122,49 @@
   * {
     @apply border-border;
   }
-  
+
   body {
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
-  
+
   /* Custom scrollbar */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
-  
+
   ::-webkit-scrollbar-track {
     @apply bg-transparent;
   }
-  
+
   ::-webkit-scrollbar-thumb {
     @apply bg-border rounded-full;
   }
-  
+
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-muted-foreground/50;
   }
 }
 
 @layer components {
+
   /* Glass morphism effect */
   .glass {
     @apply bg-card/80 backdrop-blur-xl border border-border/50;
   }
-  
+
   .glass-dark {
     @apply bg-card/60 backdrop-blur-2xl border border-white/10;
   }
-  
+
   /* Gradient backgrounds */
   .gradient-primary {
     background: linear-gradient(135deg, hsl(var(--gradient-start)), hsl(var(--gradient-end)));
   }
-  
+
   .gradient-mesh {
-    background: 
+    background:
       radial-gradient(at 40% 20%, hsl(351 60% 55% / 0.3) 0px, transparent 50%),
       radial-gradient(at 80% 0%, hsl(280 70% 45% / 0.25) 0px, transparent 50%),
       radial-gradient(at 0% 50%, hsl(351 60% 65% / 0.2) 0px, transparent 50%),
@@ -171,93 +172,119 @@
       radial-gradient(at 0% 100%, hsl(351 70% 50% / 0.2) 0px, transparent 50%),
       radial-gradient(at 80% 100%, hsl(280 50% 60% / 0.15) 0px, transparent 50%);
   }
-  
+
   /* Animated gradient orbs */
   .orb {
     @apply absolute rounded-full blur-3xl opacity-50 animate-pulse;
   }
-  
+
   .orb-1 {
     background: radial-gradient(circle, hsl(351 60% 55% / 0.4) 0%, transparent 70%);
     animation: float 8s ease-in-out infinite;
   }
-  
+
   .orb-2 {
     background: radial-gradient(circle, hsl(280 60% 50% / 0.35) 0%, transparent 70%);
     animation: float 10s ease-in-out infinite reverse;
   }
-  
+
   .orb-3 {
     background: radial-gradient(circle, hsl(220 70% 50% / 0.3) 0%, transparent 70%);
     animation: float 12s ease-in-out infinite;
   }
-  
+
   /* File card hover effect */
   .file-card {
     @apply relative overflow-hidden rounded-xl border border-border bg-card transition-all duration-300;
   }
-  
+
   .file-card:hover {
     @apply border-primary/50 shadow-lg shadow-primary/5;
     transform: translateY(-2px);
   }
-  
+
   /* Upload zone */
   .upload-zone {
     @apply relative border-2 border-dashed border-border rounded-xl transition-all duration-300;
   }
-  
+
   .upload-zone:hover,
   .upload-zone.drag-active {
     @apply border-primary bg-primary/5;
   }
-  
+
   /* Sidebar item */
   .sidebar-item {
     @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-muted-foreground transition-all duration-200;
   }
-  
+
   .sidebar-item:hover {
     @apply bg-accent text-accent-foreground;
   }
-  
+
   .sidebar-item.active {
     @apply bg-primary/10 text-primary font-medium;
   }
-  
+
   /* Auth card */
   .auth-card {
     @apply w-full max-w-md p-8 rounded-2xl bg-card border border-border shadow-2xl shadow-black/5;
   }
-  
+
+  /* Glass card — premium frosted container */
+  .glass-card {
+    @apply bg-card/70 backdrop-blur-xl border border-border/50 rounded-2xl shadow-xl;
+  }
+
+  /* Hover lift — interactive elevation on hover */
+  .hover-lift {
+    @apply transition-all duration-300 ease-out;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 40px hsl(var(--foreground) / 0.08);
+  }
+
+  /* Auth container layout */
+  .auth-container {
+    @apply relative;
+  }
+
   /* Input focus ring */
   .input-focus {
     @apply focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all duration-200;
   }
+
+  /* Shadow glow for brand elements */
+  .shadow-glow {
+    box-shadow: 0 4px 20px hsl(var(--primary) / 0.3);
+  }
 }
 
 @layer utilities {
+
   /* Text gradient */
   .text-gradient {
     @apply bg-clip-text text-transparent;
     background-image: linear-gradient(135deg, hsl(var(--gradient-start)), hsl(var(--gradient-end)));
   }
-  
+
   /* Smooth transitions */
   .transition-base {
     @apply transition-all duration-200 ease-out;
   }
-  
+
   .transition-smooth {
     @apply transition-all duration-300 ease-out;
   }
-  
+
   /* Hide scrollbar but keep functionality */
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
-  
+
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
@@ -265,15 +292,20 @@
 
 /* Keyframe animations */
 @keyframes float {
-  0%, 100% {
+
+  0%,
+  100% {
     transform: translate(0, 0) scale(1);
   }
+
   25% {
     transform: translate(10px, -20px) scale(1.05);
   }
+
   50% {
     transform: translate(-5px, -10px) scale(0.95);
   }
+
   75% {
     transform: translate(-10px, 5px) scale(1.02);
   }
@@ -283,20 +315,31 @@
   0% {
     background-position: -200% 0;
   }
+
   100% {
     background-position: 200% 0;
   }
 }
 
 .shimmer {
-  background: linear-gradient(
-    90deg,
-    hsl(var(--muted)) 0%,
-    hsl(var(--muted-foreground) / 0.1) 50%,
-    hsl(var(--muted)) 100%
-  );
+  background: linear-gradient(90deg,
+      hsl(var(--muted)) 0%,
+      hsl(var(--muted-foreground) / 0.1) 50%,
+      hsl(var(--muted)) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes gradient-shift {
+
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
 }
 
 /* ======================== */
@@ -309,7 +352,8 @@ html {
 }
 
 /* Prevent pull-to-refresh on PWA */
-html, body {
+html,
+body {
   overscroll-behavior-y: contain;
 }
 
@@ -351,12 +395,12 @@ html, body {
   .mobile-bottom-nav {
     display: block;
   }
-  
+
   /* Hide sidebar on mobile when bottom nav is visible */
   .mobile-hide-sidebar {
     display: none !important;
   }
-  
+
   /* Add padding to main content for bottom nav */
   .mobile-main-padding {
     padding-bottom: calc(70px + env(safe-area-inset-bottom));
@@ -364,11 +408,15 @@ html, body {
 }
 
 /* Tap highlight for native feel */
-button, a, .clickable {
+button,
+a,
+.clickable {
   -webkit-tap-highlight-color: transparent;
 }
 
-button:active, a:active, .clickable:active {
+button:active,
+a:active,
+.clickable:active {
   transform: scale(0.97);
   transition: transform 0.1s ease;
 }
@@ -409,7 +457,9 @@ button:active, a:active, .clickable:active {
 }
 
 @keyframes spinner {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Install prompt banner */
@@ -441,6 +491,7 @@ button:active, a:active, .clickable:active {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -482,4 +533,3 @@ button:active, a:active, .clickable:active {
   transform: translateX(-20px);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
-
