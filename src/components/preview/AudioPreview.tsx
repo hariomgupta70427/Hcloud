@@ -175,7 +175,7 @@ export function AudioPreview({
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-xl"
             onClick={(e) => e.target === e.currentTarget && onClose()}
         >
-            <audio ref={audioRef} src={src} preload="auto" crossOrigin="anonymous" />
+            <audio ref={audioRef} src={src} preload="metadata" />
 
             {/* Close button */}
             <button

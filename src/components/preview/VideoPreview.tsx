@@ -215,8 +215,7 @@ export function VideoPreview({
                     ref={videoRef}
                     src={src}
                     poster={poster}
-                    preload="auto"
-                    crossOrigin="anonymous"
+                    preload="metadata"
                     className="max-w-full max-h-[calc(100vh-120px)] w-auto h-auto"
                     onClick={togglePlay}
                     playsInline

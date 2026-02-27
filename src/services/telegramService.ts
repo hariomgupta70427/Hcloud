@@ -287,6 +287,15 @@ export async function getFileFromTelegram(fileId: string): Promise<{
 }
 
 /**
+ * Get a streaming URL for managed (Bot API) audio/video files.
+ * Uses the Vercel proxy at /api/telegram/stream so the browser can
+ * play media directly without downloading the full blob first.
+ */
+export function getManagedStreamUrl(fileId: string): string {
+    return `/api/telegram/stream?fileId=${encodeURIComponent(fileId)}`;
+}
+
+/**
  * Download a file from Telegram to blob
  */
 export async function downloadFromTelegram(
