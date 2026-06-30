@@ -7,6 +7,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Mail, ArrowLeft, Check, Cloud } from 'lucide-react';
 import { AuthInput, AuthButton } from './AuthInput';
 
+import { useAuthStore } from '@/stores/authStore';
+import { toast } from 'sonner';
+
 const forgotPasswordSchema = z.object({
   email: z.string().email('Please enter a valid email'),
 });
@@ -15,6 +18,7 @@ type ForgotPasswordData = z.infer<typeof forgotPasswordSchema>;
 
 export function ForgotPasswordForm() {
   const navigate = useNavigate();
+  const { resetPassword } = useAuthStore();
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -26,10 +30,14 @@ export function ForgotPasswordForm() {
 
   const onSubmit = async (data: ForgotPasswordData) => {
     setIsLoading(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setIsLoading(false);
-    setIsSubmitted(true);
+    try {
+      await resetPassword(data.email);
+      setIsSubmitted(true);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to send reset email');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

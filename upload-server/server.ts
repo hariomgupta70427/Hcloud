@@ -182,7 +182,8 @@ async function getOrCreateClient(session: string): Promise<TelegramClient> {
 // ============================================
 
 interface UploadSession {
-    chunks: Map<number, Buffer>;
+    chunks: Set<number>;
+    tempDir: string;
     fileName: string;
     mimeType: string;
     totalChunks: number;
@@ -195,6 +196,7 @@ interface UploadSession {
 
 // In-memory storage for upload sessions
 const uploadSessions = new Map<string, UploadSession>();
+const streamCache = new Map<string, { buffer: Buffer; timestamp: number }>();
 
 // Clean up stale sessions (older than 2 hours)
 setInterval(() => {
@@ -202,6 +204,12 @@ setInterval(() => {
     let cleaned = 0;
     for (const [id, session] of uploadSessions.entries()) {
         if (session.lastActivity < twoHoursAgo) {
+            // Clean up chunk temp directory
+            try {
+                if (session.tempDir && fs.existsSync(session.tempDir)) {
+                    fs.rmSync(session.tempDir, { recursive: true, force: true });
+                }
+            } catch { /* ignore */ }
             uploadSessions.delete(id);
             cleaned++;
         }
@@ -269,8 +277,13 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
         // Get or create upload session
         let uploadSession = uploadSessions.get(uploadId);
         if (!uploadSession) {
+            const tempDir = path.join(os.tmpdir(), `hcloud_chunks_${uploadId}`);
+            if (!fs.existsSync(tempDir)) {
+                fs.mkdirSync(tempDir, { recursive: true });
+            }
             uploadSession = {
-                chunks: new Map(),
+                chunks: new Set(),
+                tempDir,
                 fileName: fileName || 'file',
                 mimeType: mimeType || 'application/octet-stream',
                 totalChunks,
@@ -289,10 +302,12 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
 
         uploadSession.lastActivity = Date.now();
 
-        // Store chunk if not already received
+        // Write chunk to disk if not already received
         if (!uploadSession.chunks.has(chunkIndex)) {
             const chunkBuffer = Buffer.from(chunkData, 'base64');
-            uploadSession.chunks.set(chunkIndex, chunkBuffer);
+            const chunkPath = path.join(uploadSession.tempDir, `chunk_${chunkIndex}`);
+            fs.writeFileSync(chunkPath, chunkBuffer);
+            uploadSession.chunks.add(chunkIndex);
             uploadSession.receivedCount++;
             uploadSession.totalSize += chunkBuffer.length;
         }
@@ -347,21 +362,26 @@ app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response)
     console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks for ${fileName}...`);
 
     try {
-        // Assemble file from chunks (in order)
-        const orderedChunks: Buffer[] = [];
+        // Assemble file from chunk files on disk (in order)
+        const tempPath = path.join(os.tmpdir(), `hcloud_${uploadId}_${Date.now()}`);
+        const writeStream = fs.createWriteStream(tempPath);
         for (let i = 0; i < uploadSession.totalChunks; i++) {
-            orderedChunks.push(uploadSession.chunks.get(i)!);
+            const chunkPath = path.join(uploadSession.tempDir, `chunk_${i}`);
+            const chunkData = fs.readFileSync(chunkPath);
+            writeStream.write(chunkData);
         }
-        const fileBuffer = Buffer.concat(orderedChunks);
-        const fileSize = fileBuffer.length;
+        writeStream.end();
+        await new Promise<void>((resolve, reject) => {
+            writeStream.on('finish', resolve);
+            writeStream.on('error', reject);
+        });
+        const fileSize = fs.statSync(tempPath).size;
         console.log(`📄 Assembled: ${(fileSize / 1024 / 1024).toFixed(1)}MB`);
 
-        // Free chunk memory immediately
-        uploadSession.chunks.clear();
-
-        // Write to temp file for GramJS
-        const tempPath = path.join(os.tmpdir(), `hcloud_${uploadId}_${Date.now()}`);
-        fs.writeFileSync(tempPath, fileBuffer);
+        // Clean up chunk temp dir
+        try {
+            fs.rmSync(uploadSession.tempDir, { recursive: true, force: true });
+        } catch { /* ignore */ }
 
         // Use cached Telegram client (pre-warmed during chunk upload)
         console.log('🔌 Getting Telegram client...');
@@ -562,23 +582,58 @@ app.get('/stream', authMiddleware, async (req: Request, res: Response) => {
             }
         }
 
-        // Download and stream - GramJS doesn't support true chunked download
-        // but we send headers immediately so the browser starts buffering
+        // Download and stream - GramJS downloads the full file
+        // We cache it in memory briefly to handle Range requests (seeking)
         console.log(`🎵 Streaming: ${streamFileName} (${contentType})`);
 
-        const buffer = await client.downloadMedia(message, {}) as Buffer;
-
-        if (!buffer) {
-            return res.status(404).json({ error: 'Failed to download file' });
+        // Simple in-memory cache for stream responses (avoids re-downloading on seek)
+        const cacheKey = `${session.substring(0, 20)}_${messageId}`;
+        let buffer: Buffer;
+        const cached = streamCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+            buffer = cached.buffer;
+            console.log(`🎵 Using cached buffer for ${streamFileName}`);
+        } else {
+            const downloaded = await client.downloadMedia(message, {}) as Buffer;
+            if (!downloaded) {
+                return res.status(404).json({ error: 'Failed to download file' });
+            }
+            buffer = downloaded;
+            // Cache for 5 minutes, limit cache size
+            if (streamCache.size > 10) {
+                const oldest = streamCache.keys().next().value;
+                if (oldest) streamCache.delete(oldest);
+            }
+            streamCache.set(cacheKey, { buffer, timestamp: Date.now() });
         }
 
-        // Set streaming-friendly headers
+        const totalSize = buffer.length;
+
+        // Handle Range requests for seeking in audio/video
+        const rangeHeader = req.headers.range;
+        if (rangeHeader) {
+            const parts = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+            const chunkSize = end - start + 1;
+
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+            res.setHeader('Content-Length', chunkSize.toString());
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'private, max-age=3600');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
+            return res.send(buffer.subarray(start, end + 1));
+        }
+
+        // No Range header — send full file
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Length', buffer.length.toString());
+        res.setHeader('Content-Length', totalSize.toString());
         res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(streamFileName)}"`);
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'private, max-age=3600');
-        // Allow CORS for streaming
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
 

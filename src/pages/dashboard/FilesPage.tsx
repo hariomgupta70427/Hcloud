@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle, Search } from 'lucide-react';
+import { Plus, FolderPlus, Upload, Filter, ArrowUpDown, AlertCircle, Search, Trash2, Star } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -51,6 +51,32 @@ export default function FilesPage() {
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('name');
   const [filterType, setFilterType] = useState<string | null>(null);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  // Page-level drag & drop handlers
+  const handlePageDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  }, []);
+
+  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only hide if leaving the page container itself
+    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDraggingOver(false);
+    }
+  }, []);
+
+  const handlePageDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesSelected(e.dataTransfer.files);
+    }
+  }, []);
 
   // Dialog states
   const [renameFile, setRenameFile] = useState<FileItem | null>(null);
@@ -430,7 +456,24 @@ export default function FilesPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div
+      className="space-y-6 relative"
+      onDragOver={handlePageDragOver}
+      onDragLeave={handlePageDragLeave}
+      onDrop={handlePageDrop}
+    >
+      {/* Drag overlay */}
+      {isDraggingOver && (
+        <div className="fixed inset-0 z-50 bg-primary/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="p-8 rounded-2xl bg-card border-2 border-dashed border-primary shadow-2xl text-center">
+            <div className="w-16 h-16 rounded-2xl bg-primary/20 flex items-center justify-center mx-auto mb-4">
+              <Upload className="w-8 h-8 text-primary" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground">Drop files to upload</h3>
+            <p className="text-sm text-muted-foreground mt-1">Files will be uploaded to the current folder</p>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -671,11 +714,41 @@ export default function FilesPage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-6 py-3 rounded-2xl bg-card border border-border shadow-2xl"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-3 rounded-2xl bg-card border border-border shadow-2xl z-40"
           >
-            <span className="text-sm text-foreground">
+            <span className="text-sm font-medium text-foreground">
               {selectedFiles.length} item{selectedFiles.length > 1 ? 's' : ''} selected
             </span>
+            <div className="w-px h-5 bg-border" />
+            <button
+              onClick={async () => {
+                for (const id of selectedFiles) {
+                  try { await toggleStar(id); } catch { /* ignore */ }
+                }
+                clearSelection();
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title="Star selected"
+            >
+              <Star size={14} />
+              Star
+            </button>
+            <button
+              onClick={async () => {
+                if (!confirm(`Delete ${selectedFiles.length} item${selectedFiles.length > 1 ? 's' : ''}?`)) return;
+                for (const id of selectedFiles) {
+                  try { await deleteItem(id); } catch { /* ignore */ }
+                }
+                clearSelection();
+                toast.success(`Deleted ${selectedFiles.length} item${selectedFiles.length > 1 ? 's' : ''}`);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-destructive hover:bg-destructive/10 transition-colors"
+              title="Delete selected"
+            >
+              <Trash2 size={14} />
+              Delete
+            </button>
+            <div className="w-px h-5 bg-border" />
             <button
               onClick={clearSelection}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors"
