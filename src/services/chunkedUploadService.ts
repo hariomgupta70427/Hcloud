@@ -3,6 +3,8 @@
  * Handles uploads via Render server and downloads for BYOD files
  */
 
+import { getAuth } from 'firebase/auth';
+
 // Chunk size: 8MB (larger = fewer HTTP requests = faster upload)
 const CHUNK_SIZE = 8 * 1024 * 1024;
 
@@ -13,6 +15,26 @@ const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
 const API_DOWNLOAD = `${UPLOAD_SERVER_URL}/download`;
 const API_STREAM = `${UPLOAD_SERVER_URL}/stream`;
+
+/**
+ * Get authorization headers with Firebase ID token
+ */
+async function getAuthHeaders(): Promise<Record<string, string>> {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    if (!user) {
+        return { 'Content-Type': 'application/json' };
+    }
+    try {
+        const token = await user.getIdToken();
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        };
+    } catch {
+        return { 'Content-Type': 'application/json' };
+    }
+}
 
 /**
  * Get a streaming URL for BYOD audio/video files.
@@ -56,11 +78,10 @@ async function uploadChunk(
     session: string
 ): Promise<{ success: boolean; error?: string }> {
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(API_CHUNK, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 uploadId,
                 chunkIndex,
@@ -93,11 +114,10 @@ async function finalizeUpload(
     session: string
 ): Promise<ChunkedUploadResult> {
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(API_FINALIZE, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 uploadId,
                 session,
@@ -257,9 +277,10 @@ export async function downloadBYODFile(
 ): Promise<{ success: boolean; blobUrl?: string; error?: string }> {
     try {
         console.log(`[BYOD Download] Fetching message ${messageId}...`);
+        const headers = await getAuthHeaders();
         const response = await fetch(API_DOWNLOAD, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({ messageId, session }),
         });
 

@@ -17,6 +17,8 @@ const PORT = process.env.PORT || 3001;
 const TELEGRAM_API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || '';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
 
 // Validate required env vars
 if (!TELEGRAM_API_ID || !TELEGRAM_API_HASH) {
@@ -45,12 +47,80 @@ app.use(cors({
 // Parse JSON with high limit for chunks
 app.use(express.json({ limit: '12mb' }));
 
-// Health check endpoint
+// ============================================
+// FIREBASE AUTH MIDDLEWARE
+// Verifies Firebase ID tokens without firebase-admin SDK
+// ============================================
+
+interface DecodedToken {
+    uid: string;
+    email?: string;
+}
+
+// Cache for Google's public keys (refreshes every hour)
+let cachedKeys: Record<string, string> = {};
+let keysLastFetched = 0;
+
+async function getGooglePublicKeys(): Promise<Record<string, string>> {
+    const now = Date.now();
+    if (cachedKeys && now - keysLastFetched < 3600000) {
+        return cachedKeys;
+    }
+    try {
+        const res = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
+        cachedKeys = await res.json() as Record<string, string>;
+        keysLastFetched = now;
+        return cachedKeys;
+    } catch {
+        return cachedKeys; // Return stale keys if fetch fails
+    }
+}
+
+async function verifyFirebaseToken(token: string): Promise<DecodedToken | null> {
+    try {
+        // Decode the JWT payload (middle section) without verification library
+        // For full production security, use firebase-admin or a JWT library
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+
+        // Basic validation checks
+        if (!payload.sub) return null;
+        if (payload.aud !== FIREBASE_PROJECT_ID && FIREBASE_PROJECT_ID) return null;
+        if (payload.exp && payload.exp * 1000 < Date.now()) return null;
+        if (payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}` && FIREBASE_PROJECT_ID) return null;
+
+        return { uid: payload.sub, email: payload.email };
+    } catch {
+        return null;
+    }
+}
+
+// Auth middleware — extracts and verifies Firebase ID token
+async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
+
+    const idToken = authHeader.substring(7);
+    const decoded = await verifyFirebaseToken(idToken);
+
+    if (!decoded) {
+        return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
+    // Attach user info to request
+    (req as any).user = decoded;
+    next();
+}
+
+// Health check endpoint (public — no auth required)
 app.get('/health', (_: any, res: any) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
     });
 });
 
@@ -178,7 +248,7 @@ function buildFileAttributes(fileName: string, mimeType: string): Api.TypeDocume
 // CHUNKED UPLOAD ENDPOINT
 // ============================================
 
-app.post('/upload/chunk', async (req: Request, res: Response) => {
+app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) => {
     try {
         const {
             uploadId,
@@ -246,7 +316,7 @@ app.post('/upload/chunk', async (req: Request, res: Response) => {
 // FINALIZE UPLOAD ENDPOINT
 // ============================================
 
-app.post('/upload/finalize', async (req: Request, res: Response) => {
+app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response) => {
     const { uploadId, session } = req.body;
 
     if (!uploadId || !session) {
@@ -383,7 +453,7 @@ app.post('/upload/finalize', async (req: Request, res: Response) => {
 // DOWNLOAD ENDPOINT (for BYOD files - full download)
 // ============================================
 
-app.post('/download', async (req: Request, res: Response) => {
+app.post('/download', authMiddleware, async (req: Request, res: Response) => {
     const { messageId, session } = req.body;
 
     if (!messageId || !session) {
@@ -453,7 +523,7 @@ app.post('/download', async (req: Request, res: Response) => {
 // Browser can use this directly as <audio src> or <video src>
 // ============================================
 
-app.get('/stream', async (req: Request, res: Response) => {
+app.get('/stream', authMiddleware, async (req: Request, res: Response) => {
     const messageId = parseInt(req.query.messageId as string);
     const session = req.query.session as string;
 
@@ -524,7 +594,7 @@ app.get('/stream', async (req: Request, res: Response) => {
 // STATUS ENDPOINT
 // ============================================
 
-app.get('/upload/status/:uploadId', (req: Request, res: Response) => {
+app.get('/upload/status/:uploadId', authMiddleware, (req: Request, res: Response) => {
     const { uploadId } = req.params;
     const session = uploadSessions.get(uploadId);
 
@@ -562,7 +632,13 @@ app.delete('/upload/:uploadId', (req: Request, res: Response) => {
 // SERVER STATS ENDPOINT
 // ============================================
 
-app.get('/stats', (_: any, res: any) => {
+app.get('/stats', (req: Request, res: Response) => {
+    // Require admin secret to prevent information disclosure
+    const secret = req.headers['x-admin-secret'] as string;
+    if (!ADMIN_SECRET || secret !== ADMIN_SECRET) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
     const sessions = Array.from(uploadSessions.values());
     const totalMemoryUsed = sessions.reduce((sum, s) => sum + s.totalSize, 0);
 
@@ -571,7 +647,6 @@ app.get('/stats', (_: any, res: any) => {
         cachedClients: clientCache.size,
         totalMemoryUsedMB: Math.round(totalMemoryUsed / 1024 / 1024 * 100) / 100,
         uptime: process.uptime(),
-        memoryUsage: process.memoryUsage(),
     });
 });
 

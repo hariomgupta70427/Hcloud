@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Download, FileText, AlertCircle, Loader2, ArrowLeft, Shield } from 'lucide-react';
+import { Download, FileText, AlertCircle, Loader2, Shield, Cloud, Play } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { FileItem } from '@/services/fileService';
-import { getFileFromTelegram } from '@/services/telegramService';
-import { PreviewModal, getPreviewType } from '@/components/preview/PreviewModal';
+import { getPreviewType } from '@/components/preview/PreviewModal';
 import { toast } from 'sonner';
 
 export default function SharedFilePage() {
@@ -16,9 +14,14 @@ export default function SharedFilePage() {
     const [error, setError] = useState<string | null>(null);
     const [downloading, setDownloading] = useState(false);
 
-    // Settings check (password, expiration)
+    // Password state
     const [password, setPassword] = useState('');
     const [isLocked, setIsLocked] = useState(false);
+    const [passwordHash, setPasswordHash] = useState<string | null>(null);
+
+    // Preview URL state
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [loadingPreview, setLoadingPreview] = useState(false);
 
     useEffect(() => {
         const fetchFile = async () => {
@@ -37,8 +40,6 @@ export default function SharedFilePage() {
 
                 // Check if shared
                 if (!data.isShared) {
-                    // If user is owner, they can see it? This page is public usually. 
-                    // We assume this page is for public access.
                     setError('This file is not shared publicly.');
                     setLoading(false);
                     return;
@@ -54,21 +55,17 @@ export default function SharedFilePage() {
                     }
                 }
 
-                // Check password
+                const fileData = { id: snapshot.id, ...data } as FileItem;
+                setFile(fileData);
+
+                // Check password protection
                 if (data.shareSettings?.password) {
+                    setPasswordHash(data.shareSettings.password);
                     setIsLocked(true);
-                    // We still load file metadata? No, security risk. 
-                    // In a real app, backend checks password. 
-                    // Client side Firestore: if we can read the doc, we have the password hash or plain text?
-                    // WARNING: Storing password in plain text in shareSettings is insecure if Firestore rules allow read.
-                    // For this demo, we assume we fetch doc and check password client-side (NOT SECURE but functional for this scope).
-                    // Better: Store hash.
-                    // If locked, we don't show specific details yet? 
-                    // We set file to null or partial?
+                } else {
+                    // No password — load preview immediately
+                    loadPreviewUrl(fileData);
                 }
-
-                setFile({ id: snapshot.id, ...data } as FileItem);
-
             } catch (err) {
                 console.error(err);
                 setError('Error loading file. You may need permission.');
@@ -80,15 +77,43 @@ export default function SharedFilePage() {
         fetchFile();
     }, [id]);
 
+    const loadPreviewUrl = async (fileData: FileItem) => {
+        if (!fileData.telegramFileId) return;
+
+        const previewType = getPreviewType(fileData.name, fileData.mimeType);
+        if (previewType === 'audio' || previewType === 'video' || previewType === 'image' || previewType === 'pdf') {
+            setLoadingPreview(true);
+            try {
+                // Managed files: use the server-side stream proxy
+                if (fileData.storageType !== 'byod') {
+                    const streamUrl = `/api/telegram/stream?fileId=${encodeURIComponent(fileData.telegramFileId)}`;
+                    setPreviewUrl(streamUrl);
+                }
+                // BYOD files cannot be previewed on shared page (no user session available)
+            } catch (err) {
+                console.error('Failed to load preview:', err);
+            } finally {
+                setLoadingPreview(false);
+            }
+        }
+    };
+
     const handleDownload = async () => {
         if (!file?.telegramFileId) return;
         setDownloading(true);
         try {
-            const result = await getFileFromTelegram(file.telegramFileId);
-            if (result.success && result.downloadUrl) {
-                window.location.href = result.downloadUrl;
+            if (file.storageType !== 'byod') {
+                const streamUrl = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
+                const link = document.createElement('a');
+                link.href = streamUrl;
+                link.download = file.name;
+                link.target = '_blank';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                toast.success('Download started');
             } else {
-                toast.error('Download failed');
+                toast.error('BYOD files cannot be downloaded from shared links');
             }
         } catch (e) {
             toast.error('Download error');
@@ -98,29 +123,43 @@ export default function SharedFilePage() {
     };
 
     const checkPassword = () => {
-        if (file?.shareSettings?.password === password) {
-            setIsLocked(false);
-        } else {
-            toast.error('Incorrect password');
-        }
+        if (!passwordHash) return;
+        // SHA-256 hash comparison
+        crypto.subtle.digest('SHA-256', new TextEncoder().encode(password))
+            .then(hashBuffer => {
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                if (hashHex === passwordHash) {
+                    setIsLocked(false);
+                    if (file) loadPreviewUrl(file);
+                } else {
+                    toast.error('Incorrect password');
+                }
+            })
+            .catch(() => {
+                toast.error('Verification failed');
+            });
     };
 
     if (loading) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50">
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            <div className="min-h-screen flex items-center justify-center bg-background">
+                <div className="flex flex-col items-center gap-3">
+                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                    <span className="text-sm text-muted-foreground">Loading shared file...</span>
+                </div>
             </div>
         );
     }
 
     if (error) {
         return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
-                <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
-                    <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-                    <h1 className="text-xl font-bold text-gray-900 mb-2">Access Denied</h1>
-                    <p className="text-gray-500 mb-6">{error}</p>
-                    <Link to="/" className="text-primary hover:underline">Go to Home</Link>
+            <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+                <div className="bg-card p-8 rounded-2xl border border-border shadow-xl max-w-md w-full text-center">
+                    <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
+                    <h1 className="text-xl font-bold text-foreground mb-2">Access Denied</h1>
+                    <p className="text-muted-foreground mb-6">{error}</p>
+                    <Link to="/auth" className="text-primary hover:underline">Go to HCloud</Link>
                 </div>
             </div>
         );
@@ -128,21 +167,22 @@ export default function SharedFilePage() {
 
     if (isLocked) {
         return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
-                <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
-                    <Shield className="w-12 h-12 text-blue-500 mx-auto mb-4" />
-                    <h1 className="text-xl font-bold text-gray-900 mb-2">Protected File</h1>
-                    <p className="text-gray-500 mb-6">Enter password to view this file</p>
+            <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+                <div className="bg-card p-8 rounded-2xl border border-border shadow-xl max-w-md w-full text-center">
+                    <Shield className="w-12 h-12 text-primary mx-auto mb-4" />
+                    <h1 className="text-xl font-bold text-foreground mb-2">Protected File</h1>
+                    <p className="text-muted-foreground mb-6">Enter password to view this file</p>
                     <input
                         type="password"
                         value={password}
                         onChange={e => setPassword(e.target.value)}
-                        className="w-full px-4 py-2 border rounded-lg mb-4"
+                        onKeyDown={e => e.key === 'Enter' && checkPassword()}
+                        className="w-full px-4 py-3 rounded-xl bg-muted border-2 border-transparent focus:border-primary outline-none mb-4"
                         placeholder="Password"
                     />
                     <button
                         onClick={checkPassword}
-                        className="w-full py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+                        className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors font-medium"
                     >
                         Unlock
                     </button>
@@ -151,86 +191,98 @@ export default function SharedFilePage() {
         );
     }
 
-    // Determine preview logic
     const previewType = file ? getPreviewType(file.name, file.mimeType) : 'unknown';
 
     return (
-        <div className="min-h-screen bg-gray-100 flex flex-col">
-            <header className="bg-white border-b px-6 py-4 flex items-center justify-between">
+        <div className="min-h-screen bg-background flex flex-col">
+            <header className="bg-card border-b border-border px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                    <FileText className="text-primary" />
-                    <span className="font-bold text-xl">HCloud Shared</span>
+                    <Cloud className="text-primary" />
+                    <span className="font-bold text-xl text-foreground">HCloud</span>
                 </div>
-                <Link to="/login" className="text-sm font-medium hover:text-primary">
-                    Login to Save
+                <Link to="/auth" className="text-sm font-medium text-muted-foreground hover:text-primary transition-colors">
+                    Sign in
                 </Link>
             </header>
 
             <main className="flex-1 container mx-auto p-6 flex flex-col items-center">
-                <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 w-full max-w-4xl flex flex-col items-center text-center">
-                    <div className="w-24 h-24 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+                <div className="bg-card rounded-2xl border border-border shadow-sm p-8 w-full max-w-4xl flex flex-col items-center text-center">
+                    <div className="w-24 h-24 bg-primary/10 rounded-2xl flex items-center justify-center mb-6">
                         <FileText className="w-12 h-12 text-primary" />
                     </div>
 
-                    <h1 className="text-2xl font-bold text-gray-900 mb-2">{file?.name}</h1>
-                    <p className="text-gray-500 mb-8">
-                        {(file?.size ? (file.size / 1024 / 1024).toFixed(2) : 0)} MB • Shared via HCloud
+                    <h1 className="text-2xl font-bold text-foreground mb-2">{file?.name}</h1>
+                    <p className="text-muted-foreground mb-8">
+                        {(file?.size ? (file.size / 1024 / 1024).toFixed(2) : '0')} MB • Shared via HCloud
                     </p>
 
                     <div className="flex gap-4">
                         <button
                             onClick={handleDownload}
                             disabled={downloading}
-                            className="px-8 py-3 bg-primary text-white rounded-xl hover:bg-primary/90 transition-all shadow-lg hover:shadow-primary/25 flex items-center gap-2 font-medium"
+                            className="px-8 py-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-all shadow-lg hover:shadow-primary/25 flex items-center gap-2 font-medium disabled:opacity-50"
                         >
-                            {downloading ? <Loader2 className="animate-spin" /> : <Download size={20} />}
+                            {downloading ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
                             Download File
                         </button>
                     </div>
 
-                    {/* Preview Section if supported */}
-                    <div className="mt-12 w-full h-[600px] bg-gray-50 rounded-xl border overflow-hidden relative">
-                        {(previewType === 'image' || previewType === 'video' || previewType === 'audio' || previewType === 'pdf') ? (
-                            <PreviewModal
-                                isOpen={true}
-                                file={{
-                                    id: file!.id,
-                                    name: file!.name,
-                                    url: '', // PreviewModal expects url, but getFileFromTelegram gives downloadUrl which expires. We need fresh url.
-                                    // Challenge: Telegram URL expires. We need to fetch it dynamically.
-                                    // We'll trigger a fetch for URL inside the preview or just pass a placeholder?
-                                    // Actually, for the PreviewModal to work, we need a URL. 
-                                    // We can use the logic in handleDownload to get URL and set it in state.
-                                    type: previewType,
-                                    mimeType: file!.mimeType
-                                } as any}
-                                onClose={() => { }} // Can't close embedded
-                            // Actually, let's just use iframe directly for PDF or img for Image to keep it simple
-                            />
-                        ) : (
-                            <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                                <FileText size={48} className="mb-4" />
-                                <p>Preview not available</p>
+                    {/* Preview Section */}
+                    <div className="mt-12 w-full rounded-xl border border-border overflow-hidden relative bg-muted/30">
+                        {loadingPreview && (
+                            <div className="flex items-center justify-center h-64">
+                                <Loader2 className="w-8 h-8 text-primary animate-spin" />
                             </div>
                         )}
 
-                        {/* Re-thinking Preview: Embedded PreviewModal is complex because it's a modal. 
-                        Let's just show "Download to View" for now to satisfy the "Public Link" requirement basics. 
-                        Wait, user wanted "view that file".
-                        For PDF/Image/Video, I should try to render it.
-                    */}
-                        {/* Overlay to block interaction if needed or just use simple tags */}
-                        {previewType === 'pdf' && (
-                            <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent('WAIT_WE_NEED_URL')}&embedded=true`} className="w-full h-full" />
+                        {!loadingPreview && previewUrl && previewType === 'image' && (
+                            <img
+                                src={previewUrl}
+                                alt={file?.name}
+                                className="w-full max-h-[600px] object-contain"
+                                onError={() => setPreviewUrl(null)}
+                            />
                         )}
-                        {/* 
-                        Real Issue: We don't have a public URL until we call getFileFromTelegram.
-                        And getFileFromTelegram needs a bot token (backend). 
-                        If we are client-side, we expose bot token?
-                        src/services/telegramService.ts uses VITE_TELEGRAM_BOT_TOKEN.
-                        So we HAVE the token client side.
-                        So we can fetch the URL.
-                      */}
+
+                        {!loadingPreview && previewUrl && previewType === 'video' && (
+                            <video
+                                src={previewUrl}
+                                controls
+                                playsInline
+                                preload="metadata"
+                                className="w-full max-h-[600px]"
+                            />
+                        )}
+
+                        {!loadingPreview && previewUrl && previewType === 'audio' && (
+                            <div className="flex flex-col items-center justify-center p-12 gap-4">
+                                <div className="w-24 h-24 rounded-2xl bg-primary/10 flex items-center justify-center">
+                                    <Play className="w-10 h-10 text-primary" />
+                                </div>
+                                <audio
+                                    src={previewUrl}
+                                    controls
+                                    preload="metadata"
+                                    className="w-full max-w-md"
+                                />
+                            </div>
+                        )}
+
+                        {!loadingPreview && !previewUrl && previewType !== 'unknown' && (
+                            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                                <FileText size={48} className="mb-4" />
+                                <p>Preview not available for this file type</p>
+                                <p className="text-sm mt-1">Download the file to view it</p>
+                            </div>
+                        )}
+
+                        {!loadingPreview && previewType === 'unknown' && (
+                            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                                <FileText size={48} className="mb-4" />
+                                <p>Preview not available</p>
+                                <p className="text-sm mt-1">Download the file to view it</p>
+                            </div>
+                        )}
                     </div>
                 </div>
             </main>

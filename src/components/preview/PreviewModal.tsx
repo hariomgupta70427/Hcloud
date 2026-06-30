@@ -24,6 +24,7 @@ interface PreviewModalProps {
     onClose: () => void;
     onDownload?: (file: PreviewFile) => void;
     files?: PreviewFile[]; // For gallery navigation
+    onNavigate?: (file: PreviewFile) => void; // Callback when navigating gallery
 }
 
 // Detect file type from extension or mime type
@@ -50,7 +51,7 @@ export function getPreviewType(filename: string, mimeType?: string): PreviewType
 
     // PDF
     if (ext === 'pdf' || mimeType === 'application/pdf') {
-        return 'office';
+        return 'pdf';
     }
 
     // Office Documents
@@ -82,13 +83,16 @@ export function PreviewModal({
     onClose,
     onDownload,
     files = [],
+    onNavigate,
 }: PreviewModalProps) {
     if (!file) return null;
 
     const currentIndex = files.findIndex((f) => f.id === file.id);
     const handleNavigate = (index: number) => {
-        // This would be handled by parent component
-        console.log('Navigate to index:', index);
+        const targetFile = files[index];
+        if (targetFile && onNavigate) {
+            onNavigate(targetFile);
+        }
     };
 
     const handleDownload = () => {

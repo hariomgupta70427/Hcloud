@@ -360,6 +360,13 @@ export async function toggleStar(id: string): Promise<boolean> {
     return newStarred;
 }
 
+// Hash a password string with SHA-256 (browser-native)
+async function hashPassword(password: string): Promise<string> {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Share file
 export async function shareFile(
     id: string,
@@ -367,10 +374,16 @@ export async function shareFile(
 ): Promise<string> {
     const publicShareLink = `${window.location.origin}/s/${id}`;
 
+    // Hash password before storing (never store plain text)
+    let hashedPassword: string | null = null;
+    if (settings.password) {
+        hashedPassword = await hashPassword(settings.password);
+    }
+
     await updateDoc(doc(db, 'files', id), {
         isShared: true,
         shareSettings: {
-            ...settings,
+            password: hashedPassword,
             link: publicShareLink,
             expiresAt: settings.expiresAt ? Timestamp.fromDate(settings.expiresAt) : null,
         },

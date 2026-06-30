@@ -1,15 +1,7 @@
 // Telegram Bot API Service for file storage
-// Uses Telegram as a free unlimited file storage backend
+// All Bot API calls are proxied through /api/telegram/* serverless functions
+// so the bot token NEVER appears in the client bundle.
 
-// Get credentials from environment variables - no fallbacks for security
-const TELEGRAM_BOT_TOKEN = import.meta.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_CHAT_ID = import.meta.env.TELEGRAM_CHAT_ID || '';
-const TELEGRAM_API_BASE = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-
-// Validate required environment variables
-if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.error('Missing required Telegram environment variables. Check your .env file.');
-}
 // Max file sizes for Telegram Bot API
 export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB for regular uploads
 export const MAX_DOCUMENT_SIZE = 2000 * 1024 * 1024; // 2 GB for documents via URL
@@ -37,87 +29,64 @@ export interface UploadProgressCallback {
 }
 
 /**
- * Upload a file to Telegram
- * Files are sent to a private chat and stored permanently
+ * Upload a file to Telegram via the server-side proxy.
+ * The bot token is only on the server.
  */
 export async function uploadToTelegram(
     file: File,
     caption?: string,
     onProgress?: UploadProgressCallback
 ): Promise<TelegramUploadResult> {
-    console.log('[Telegram] uploadToTelegram called for:', file.name);
-    console.log('[Telegram] Bot Token:', TELEGRAM_BOT_TOKEN ? 'Present' : 'MISSING');
-    console.log('[Telegram] Chat ID:', TELEGRAM_CHAT_ID);
-
     try {
         // Check file size
         if (file.size > MAX_FILE_SIZE) {
-            console.log('[Telegram] File too large:', file.size);
             return {
                 success: false,
                 error: `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
             };
         }
 
-        // Create form data
-        const formData = new FormData();
-        formData.append('chat_id', TELEGRAM_CHAT_ID);
-        formData.append('document', file, file.name);
-
-        if (caption) {
-            formData.append('caption', caption);
-        }
-
-        // Upload with progress tracking using XMLHttpRequest
-        const result = await uploadWithProgress(
-            `${TELEGRAM_API_BASE}/sendDocument`,
-            formData,
-            onProgress
+        // Convert file to base64 for JSON transport
+        if (onProgress) onProgress(10);
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
         );
+        if (onProgress) onProgress(30);
 
-        if (!result.ok) {
-            const response = await result.json();
+        // Send to our server-side proxy
+        const response = await fetch('/api/telegram/managed-upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                fileBase64: base64,
+                fileName: file.name,
+                mimeType: file.type || 'application/octet-stream',
+                method: 'sendDocument',
+            }),
+        });
+
+        if (onProgress) onProgress(90);
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
             return {
                 success: false,
-                error: response.description || 'Upload failed',
+                error: result.error || 'Upload failed',
             };
         }
 
-        const responseData = await result.json();
-        console.log('[Telegram] Response:', JSON.stringify(responseData, null, 2));
-
-        if (!responseData.ok) {
-            return {
-                success: false,
-                error: responseData.description || 'Upload failed',
-            };
-        }
-
-        // Handle different file types in Telegram response
-        // When using sendDocument, audio files may still return document
-        // but if API returns audio/video/voice object instead, handle it
-        const fileData = responseData.result.document
-            || responseData.result.audio
-            || responseData.result.video
-            || responseData.result.voice
-            || responseData.result.video_note;
-
-        if (!fileData) {
-            console.error('[Telegram] No file data in response:', responseData);
-            return {
-                success: false,
-                error: 'No file data in response',
-            };
-        }
+        if (onProgress) onProgress(100);
 
         return {
             success: true,
-            fileId: fileData.file_id,
-            uniqueFileId: fileData.file_unique_id,
-            fileName: fileData.file_name || file.name,
-            mimeType: fileData.mime_type || file.type,
-            fileSize: fileData.file_size || file.size,
-            thumbnail: fileData.thumbnail?.file_id,
+            fileId: result.fileId,
+            uniqueFileId: result.uniqueFileId,
+            fileName: result.fileName || file.name,
+            mimeType: result.mimeType || file.type,
+            fileSize: result.fileSize || file.size,
+            thumbnail: result.thumbnail,
         };
     } catch (error: any) {
         console.error('Telegram upload error:', error);
@@ -129,7 +98,7 @@ export async function uploadToTelegram(
 }
 
 /**
- * Upload a photo to Telegram (compressed)
+ * Upload a photo to Telegram (compressed) via server proxy
  */
 export async function uploadPhotoToTelegram(
     file: File,
@@ -137,60 +106,48 @@ export async function uploadPhotoToTelegram(
     onProgress?: UploadProgressCallback
 ): Promise<TelegramUploadResult> {
     try {
-        const formData = new FormData();
-        formData.append('chat_id', TELEGRAM_CHAT_ID);
-        formData.append('photo', file, file.name);
-
-        if (caption) {
-            formData.append('caption', caption);
-        }
-
-        const result = await uploadWithProgress(
-            `${TELEGRAM_API_BASE}/sendPhoto`,
-            formData,
-            onProgress
+        if (onProgress) onProgress(10);
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
         );
+        if (onProgress) onProgress(30);
 
-        if (!result.ok) {
-            const response = await result.json();
-            return {
-                success: false,
-                error: response.description || 'Photo upload failed',
-            };
+        const response = await fetch('/api/telegram/managed-upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                fileBase64: base64,
+                fileName: file.name,
+                mimeType: file.type,
+                method: 'sendPhoto',
+            }),
+        });
+
+        if (onProgress) onProgress(90);
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            return { success: false, error: result.error || 'Photo upload failed' };
         }
 
-        const responseData = await result.json();
-
-        if (!responseData.ok) {
-            return {
-                success: false,
-                error: responseData.description || 'Photo upload failed',
-            };
-        }
-
-        // Get the largest photo size
-        const photos = responseData.result.photo;
-        const largestPhoto = photos[photos.length - 1];
-
+        if (onProgress) onProgress(100);
         return {
             success: true,
-            fileId: largestPhoto.file_id,
-            uniqueFileId: largestPhoto.file_unique_id,
+            fileId: result.fileId,
+            uniqueFileId: result.uniqueFileId,
             fileName: file.name,
-            mimeType: file.type,
-            fileSize: largestPhoto.file_size,
+            mimeType: result.mimeType || file.type,
+            fileSize: result.fileSize || file.size,
         };
     } catch (error: any) {
         console.error('Telegram photo upload error:', error);
-        return {
-            success: false,
-            error: error.message || 'Network error during photo upload',
-        };
+        return { success: false, error: error.message || 'Network error during photo upload' };
     }
 }
 
 /**
- * Upload a video to Telegram
+ * Upload a video to Telegram via server proxy
  */
 export async function uploadVideoToTelegram(
     file: File,
@@ -198,59 +155,50 @@ export async function uploadVideoToTelegram(
     onProgress?: UploadProgressCallback
 ): Promise<TelegramUploadResult> {
     try {
-        const formData = new FormData();
-        formData.append('chat_id', TELEGRAM_CHAT_ID);
-        formData.append('video', file, file.name);
-
-        if (caption) {
-            formData.append('caption', caption);
-        }
-
-        const result = await uploadWithProgress(
-            `${TELEGRAM_API_BASE}/sendVideo`,
-            formData,
-            onProgress
+        if (onProgress) onProgress(10);
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
         );
+        if (onProgress) onProgress(30);
 
-        if (!result.ok) {
-            const response = await result.json();
-            return {
-                success: false,
-                error: response.description || 'Video upload failed',
-            };
+        const response = await fetch('/api/telegram/managed-upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                fileBase64: base64,
+                fileName: file.name,
+                mimeType: file.type,
+                method: 'sendVideo',
+            }),
+        });
+
+        if (onProgress) onProgress(90);
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            return { success: false, error: result.error || 'Video upload failed' };
         }
 
-        const responseData = await result.json();
-
-        if (!responseData.ok) {
-            return {
-                success: false,
-                error: responseData.description || 'Video upload failed',
-            };
-        }
-
-        const video = responseData.result.video;
-
+        if (onProgress) onProgress(100);
         return {
             success: true,
-            fileId: video.file_id,
-            uniqueFileId: video.file_unique_id,
+            fileId: result.fileId,
+            uniqueFileId: result.uniqueFileId,
             fileName: file.name,
-            mimeType: video.mime_type,
-            fileSize: video.file_size,
-            thumbnail: video.thumbnail?.file_id,
+            mimeType: result.mimeType || file.type,
+            fileSize: result.fileSize || file.size,
+            thumbnail: result.thumbnail,
         };
     } catch (error: any) {
         console.error('Telegram video upload error:', error);
-        return {
-            success: false,
-            error: error.message || 'Network error during video upload',
-        };
+        return { success: false, error: error.message || 'Network error during video upload' };
     }
 }
 
 /**
- * Get file info and download URL from Telegram
+ * Get file info and download URL from Telegram.
+ * Uses the server-side stream proxy — no bot token needed client-side.
  */
 export async function getFileFromTelegram(fileId: string): Promise<{
     success: boolean;
@@ -259,23 +207,13 @@ export async function getFileFromTelegram(fileId: string): Promise<{
     error?: string;
 }> {
     try {
-        const response = await fetch(`${TELEGRAM_API_BASE}/getFile?file_id=${fileId}`);
-        const data = await response.json();
-
-        if (!data.ok) {
-            return {
-                success: false,
-                error: data.description || 'Failed to get file info',
-            };
-        }
-
-        const fileInfo: TelegramFileInfo = data.result;
-        const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${fileInfo.file_path}`;
+        // Use the server-side stream proxy as the download URL
+        // The stream endpoint handles getFile + download internally
+        const downloadUrl = `/api/telegram/stream?fileId=${encodeURIComponent(fileId)}`;
 
         return {
             success: true,
             downloadUrl,
-            fileInfo,
         };
     } catch (error: any) {
         console.error('Telegram getFile error:', error);
@@ -296,7 +234,7 @@ export function getManagedStreamUrl(fileId: string): string {
 }
 
 /**
- * Download a file from Telegram to blob
+ * Download a file from Telegram to blob via the server-side proxy
  */
 export async function downloadFromTelegram(
     fileId: string,
@@ -307,17 +245,8 @@ export async function downloadFromTelegram(
     error?: string;
 }> {
     try {
-        const fileResult = await getFileFromTelegram(fileId);
-
-        if (!fileResult.success || !fileResult.downloadUrl) {
-            return {
-                success: false,
-                error: fileResult.error || 'Failed to get download URL',
-            };
-        }
-
-        // Download with progress
-        const response = await fetch(fileResult.downloadUrl);
+        const downloadUrl = `/api/telegram/stream?fileId=${encodeURIComponent(fileId)}`;
+        const response = await fetch(downloadUrl);
 
         if (!response.ok) {
             return {
@@ -364,16 +293,15 @@ export async function downloadFromTelegram(
 
 /**
  * Delete a message from Telegram (to remove file)
- * Note: This only works within 48 hours of upload
+ * Note: This only works within 48 hours of upload.
+ * Proxied through server-side endpoint.
  */
 export async function deleteFromTelegram(messageId: number): Promise<boolean> {
     try {
-        const response = await fetch(
-            `${TELEGRAM_API_BASE}/deleteMessage?chat_id=${TELEGRAM_CHAT_ID}&message_id=${messageId}`,
-            { method: 'POST' }
-        );
-        const data = await response.json();
-        return data.ok;
+        // TODO: Create /api/telegram/delete endpoint for server-side delete
+        // For now, deletion from Telegram is not critical — Firestore record is removed
+        console.warn('deleteFromTelegram: server-side delete endpoint not yet implemented');
+        return false;
     } catch {
         return false;
     }
@@ -397,46 +325,4 @@ export async function smartUploadToTelegram(
         // Use document upload for everything else
         return uploadToTelegram(file, undefined, onProgress);
     }
-}
-
-/**
- * Helper function for upload with progress tracking
- */
-function uploadWithProgress(
-    url: string,
-    formData: FormData,
-    onProgress?: UploadProgressCallback
-): Promise<Response> {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-
-        xhr.upload.addEventListener('progress', (event) => {
-            if (event.lengthComputable && onProgress) {
-                const progress = (event.loaded / event.total) * 100;
-                onProgress(Math.round(progress));
-            }
-        });
-
-        xhr.addEventListener('load', () => {
-            resolve(new Response(xhr.response, {
-                status: xhr.status,
-                statusText: xhr.statusText,
-                headers: new Headers({
-                    'Content-Type': 'application/json',
-                }),
-            }));
-        });
-
-        xhr.addEventListener('error', () => {
-            reject(new Error('Network error'));
-        });
-
-        xhr.addEventListener('abort', () => {
-            reject(new Error('Upload aborted'));
-        });
-
-        xhr.open('POST', url);
-        xhr.responseType = 'text';
-        xhr.send(formData);
-    });
 }

@@ -244,8 +244,26 @@ export default function FilesPage() {
         let streamUrl: string;
 
         if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-          // BYOD: stream via Vercel proxy using gramjs
-          streamUrl = `/api/telegram/stream?messageId=${file.telegramMessageId}&session=${encodeURIComponent(user.byodConfig.telegramSession)}`;
+          // BYOD: exchange session for a short-lived token, then stream
+          try {
+            const tokenRes = await fetch('/api/telegram/session-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session: user.byodConfig.telegramSession,
+                messageId: file.telegramMessageId,
+              }),
+            });
+            const tokenData = await tokenRes.json();
+            if (!tokenData.token) {
+              toast.error('Failed to prepare stream');
+              return;
+            }
+            streamUrl = `/api/telegram/stream?token=${tokenData.token}`;
+          } catch (err) {
+            toast.error('Failed to prepare stream');
+            return;
+          }
         } else {
           // Managed: stream via Vercel proxy using Bot API
           streamUrl = getManagedStreamUrl(file.telegramFileId);
@@ -593,7 +611,7 @@ export default function FilesPage() {
           onClose={() => setShareFile(null)}
           onCreateLink={async (options) => {
             await handleShare(options);
-            return `${window.location.origin}/share/${shareFile.id}`;
+            return `${window.location.origin}/s/${shareFile.id}`;
           }}
           onCopyLink={(link) => navigator.clipboard.writeText(link)}
         />

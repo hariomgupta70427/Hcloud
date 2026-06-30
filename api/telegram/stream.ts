@@ -1,14 +1,16 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { TelegramClient, Api, sessions } from 'telegram';
 import bigInt from 'big-integer';
+import { getSessionFromToken } from './session-token';
 const { StringSession } = sessions;
 
 /**
  * Unified streaming proxy for all Telegram files.
  *
- * Supports two modes:
+ * Supports three modes:
  *   1. Managed (Bot API):   GET /api/telegram/stream?fileId=<id>
- *   2. BYOD (User API):     GET /api/telegram/stream?messageId=<id>&session=<session>
+ *   2. BYOD (User API):     GET /api/telegram/stream?token=<short-lived-token>
+ *   3. BYOD (legacy):       GET /api/telegram/stream?messageId=<id>&session=<session>
  *
  * Pipes binary data directly to the client with proper Content-Type and
  * Cache-Control headers so <audio>/<video> elements play instantly.
@@ -44,11 +46,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
     const fileId = req.query.fileId as string | undefined;
+    const token = req.query.token as string | undefined;
     const messageId = req.query.messageId as string | undefined;
     const session = req.query.session as string | undefined;
 
     try {
-        // ── BYOD mode (User API via gramjs) ──
+        // ── BYOD mode via secure token (preferred) ──
+        if (token) {
+            const tokenData = getSessionFromToken(token);
+            if (!tokenData) {
+                return res.status(401).json({ error: 'Invalid or expired stream token' });
+            }
+            return await handleBYOD(req, res, tokenData.messageId, tokenData.session);
+        }
+
+        // ── BYOD mode via raw session (legacy, less secure) ──
         if (messageId && session) {
             return await handleBYOD(req, res, parseInt(messageId), session);
         }
@@ -58,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return await handleManaged(req, res, fileId);
         }
 
-        return res.status(400).json({ error: 'Provide either fileId or messageId+session' });
+        return res.status(400).json({ error: 'Provide fileId, token, or messageId+session' });
     } catch (error: any) {
         console.error('[Stream] Error:', error);
         return res.status(500).json({ error: 'Streaming failed' });

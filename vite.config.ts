@@ -56,8 +56,8 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.FIREBASE_STORAGE_BUCKET': JSON.stringify(env.FIREBASE_STORAGE_BUCKET),
       'import.meta.env.FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(env.FIREBASE_MESSAGING_SENDER_ID),
       'import.meta.env.FIREBASE_APP_ID': JSON.stringify(env.FIREBASE_APP_ID),
-      'import.meta.env.TELEGRAM_BOT_TOKEN': JSON.stringify(env.TELEGRAM_BOT_TOKEN),
-      'import.meta.env.TELEGRAM_CHAT_ID': JSON.stringify(env.TELEGRAM_CHAT_ID),
+      // NOTE: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are intentionally NOT exposed
+      // to the client. All Bot API calls go through /api/telegram/* serverless functions.
       'import.meta.env.TELEGRAM_API_ID': JSON.stringify(env.TELEGRAM_API_ID),
       'import.meta.env.TELEGRAM_API_HASH': JSON.stringify(env.TELEGRAM_API_HASH),
     },

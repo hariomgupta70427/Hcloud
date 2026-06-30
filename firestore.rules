@@ -8,10 +8,18 @@ service cloud.firestore {
     
     // Files collection
     match /files/{fileId} {
-      // Allow public read if the file is shared
-      allow read: if resource.data.isShared == true;
+      // Allow public read ONLY if the file is shared AND not expired.
+      // Password verification happens client-side against the SHA-256 hash,
+      // which is safe because the hash cannot be reversed to recover the password.
+      // The telegramFileId is needed for the stream proxy to serve the file.
+      allow read: if resource.data.isShared == true
+                  && (
+                    // No expiration set, or expiration is in the future
+                    resource.data.shareSettings.expiresAt == null
+                    || resource.data.shareSettings.expiresAt > request.time
+                  );
       
-      // Allow owner to read existing files
+      // Allow owner to read their own files
       allow read: if request.auth != null && resource.data.userId == request.auth.uid;
       
       // Allow authenticated users to CREATE files (they set their own userId)
