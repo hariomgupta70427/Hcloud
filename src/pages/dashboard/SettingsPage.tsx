@@ -21,6 +21,14 @@ import { NotificationSettings } from '@/components/settings/NotificationSettings
 import { SecuritySettings } from '@/components/settings/SecuritySettings';
 import { StorageSettings } from '@/components/settings/StorageSettings';
 import { TelegramConnectDialog } from '@/components/settings/TelegramConnectDialog';
+import { auth, db } from '@/lib/firebase';
+import {
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword,
+} from 'firebase/auth';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { toast } from 'sonner';
 
 const settingsSections = [
   {
@@ -79,6 +87,47 @@ export default function SettingsPage() {
     setShowProfileEdit(false);
   };
 
+  // Password change via Firebase reauthentication
+  const handleChangePassword = async (currentPassword: string, newPassword: string) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser || !currentUser.email) {
+      throw new Error('Not authenticated');
+    }
+
+    // Reauthenticate first
+    const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
+    try {
+      await reauthenticateWithCredential(currentUser, credential);
+    } catch (err: any) {
+      if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        throw new Error('Current password is incorrect');
+      }
+      throw err;
+    }
+
+    // Update password
+    await updatePassword(currentUser, newPassword);
+    toast.success('Password updated successfully');
+  };
+
+  // Save notification settings to Firestore
+  const handleSaveNotifications = async (settings: { id: string; label: string; description: string; enabled: boolean }[]) => {
+    if (!user) return;
+    try {
+      const notificationPrefs: Record<string, boolean> = {};
+      for (const s of settings) {
+        notificationPrefs[s.id] = s.enabled;
+      }
+      await updateDoc(doc(db, 'users', user.id), {
+        notificationSettings: notificationPrefs,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      toast.error('Failed to save notification settings');
+      throw err;
+    }
+  };
+
   const renderSectionContent = () => {
     switch (activeSection) {
       case 'notifications':
@@ -95,7 +144,7 @@ export default function SettingsPage() {
               <ChevronLeft size={20} />
               Back to Settings
             </button>
-            <NotificationSettings />
+            <NotificationSettings onSave={handleSaveNotifications} />
           </motion.div>
         );
       case 'security':
@@ -112,7 +161,7 @@ export default function SettingsPage() {
               <ChevronLeft size={20} />
               Back to Settings
             </button>
-            <SecuritySettings />
+            <SecuritySettings onChangePassword={handleChangePassword} />
           </motion.div>
         );
       case 'storage':
@@ -153,8 +202,8 @@ export default function SettingsPage() {
           isOpen={showConnectDialog}
           onClose={() => setShowConnectDialog(false)}
           onConnect={() => {
-            // Optional: refresh user data or show success message if needed
-            // The dialog itself handles the updateBYODConfig call
+            toast.success('Telegram connected successfully!');
+            setShowConnectDialog(false);
           }}
         />
       </div>
@@ -286,7 +335,10 @@ export default function SettingsPage() {
       <TelegramConnectDialog
         isOpen={showConnectDialog}
         onClose={() => setShowConnectDialog(false)}
-        onConnect={() => { }}
+        onConnect={() => {
+          toast.success('Telegram connected successfully!');
+          setShowConnectDialog(false);
+        }}
       />
     </div>
   );

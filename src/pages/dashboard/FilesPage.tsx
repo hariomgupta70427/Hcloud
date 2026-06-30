@@ -49,6 +49,8 @@ export default function FilesPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('name');
+  const [filterType, setFilterType] = useState<string | null>(null);
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
 
   // Dialog states
   const [renameFile, setRenameFile] = useState<FileItem | null>(null);
@@ -71,12 +73,12 @@ export default function FilesPage() {
     }
   }, [user?.id, currentFolder, loadFiles, searchQuery]);
 
-  // Load all folders for MoveDialog
+  // Load all folders only when MoveDialog is about to open
   useEffect(() => {
-    if (user?.id) {
+    if (user?.id && moveFile) {
       fileService.getAllFolders(user.id).then(setAllFolders).catch(console.error);
     }
-  }, [user?.id, currentFolder, loadFiles, searchQuery]);
+  }, [user?.id, moveFile]);
 
   // Global search when searchQuery changes
   useEffect(() => {
@@ -123,6 +125,27 @@ export default function FilesPage() {
           return (b.size || 0) - (a.size || 0);
         default:
           return 0;
+      }
+    })
+    .filter((file) => {
+      if (!filterType) return true;
+      switch (filterType) {
+        case 'images':
+          return file.mimeType?.startsWith('image/');
+        case 'videos':
+          return file.mimeType?.startsWith('video/');
+        case 'audio':
+          return file.mimeType?.startsWith('audio/');
+        case 'documents':
+          return file.mimeType?.includes('pdf') || file.mimeType?.includes('document') || file.mimeType?.includes('word') || file.mimeType?.includes('spreadsheet') || file.mimeType?.includes('presentation');
+        case 'archives':
+          return file.mimeType?.includes('zip') || file.mimeType?.includes('rar') || file.mimeType?.includes('7z') || file.mimeType?.includes('tar') || file.mimeType?.includes('gzip');
+        case 'code':
+          return file.mimeType?.includes('javascript') || file.mimeType?.includes('json') || file.mimeType?.includes('html') || file.mimeType?.includes('css') || file.mimeType?.includes('xml') || file.mimeType?.includes('text/plain');
+        case 'folders':
+          return file.type === 'folder';
+        default:
+          return true;
       }
     });
 
@@ -301,12 +324,26 @@ export default function FilesPage() {
         }
 
         if (downloadUrl) {
+          // For code files, fetch the text content so CodePreview can render it
+          let textContent: string | undefined;
+          if (previewType === 'code') {
+            try {
+              const textRes = await fetch(downloadUrl);
+              if (textRes.ok) {
+                textContent = await textRes.text();
+              }
+            } catch (err) {
+              console.warn('Failed to fetch code content:', err);
+            }
+          }
+
           setPreviewFile({
             id: file.id,
             name: file.name,
             url: downloadUrl,
             type: previewType,
             mimeType: file.mimeType,
+            content: textContent,
           });
 
           toast.dismiss('file-loading');
@@ -339,7 +376,7 @@ export default function FilesPage() {
     }
   };
 
-  const handleFileAction = (action: string, file: FileItem) => {
+  const handleFileAction = async (action: string, file: FileItem) => {
     switch (action) {
       case 'rename':
         setRenameFile(file);
@@ -357,8 +394,37 @@ export default function FilesPage() {
         toggleStar(file.id);
         break;
       case 'download':
-        // TODO: Implement download
-        console.log('Download:', file);
+        if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
+          // BYOD: download via Render server
+          toast.info('Starting download...');
+          try {
+            const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
+            if (result.success && result.blobUrl) {
+              const link = document.createElement('a');
+              link.href = result.blobUrl;
+              link.download = file.name;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(result.blobUrl);
+              toast.success('Download complete');
+            } else {
+              toast.error(result.error || 'Download failed');
+            }
+          } catch (err) {
+            toast.error('Download failed');
+          }
+        } else if (file.telegramFileId) {
+          // Managed: download via stream proxy
+          const link = document.createElement('a');
+          link.href = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
+          link.download = file.name;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          toast.success('Download started');
+        }
         break;
     }
   };
@@ -390,10 +456,52 @@ export default function FilesPage() {
           </div>
 
           {/* Filter button */}
-          <button className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-            <Filter size={16} />
-            Filter
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowFilterMenu(!showFilterMenu)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                filterType
+                  ? 'bg-primary/10 text-primary border border-primary/30'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              <Filter size={16} />
+              {filterType ? filterType.charAt(0).toUpperCase() + filterType.slice(1) : 'Filter'}
+              {filterType && (
+                <span
+                  onClick={(e) => { e.stopPropagation(); setFilterType(null); setShowFilterMenu(false); }}
+                  className="ml-1 w-4 h-4 rounded-full bg-primary/20 flex items-center justify-center text-xs hover:bg-primary/40"
+                >
+                  ×
+                </span>
+              )}
+            </button>
+            {showFilterMenu && (
+              <div className="absolute top-full mt-1 right-0 w-48 bg-card border border-border rounded-xl shadow-lg z-50 py-1 overflow-hidden">
+                {[
+                  { id: 'images', label: '🖼️ Images' },
+                  { id: 'videos', label: '🎬 Videos' },
+                  { id: 'audio', label: '🎵 Audio' },
+                  { id: 'documents', label: '📄 Documents' },
+                  { id: 'archives', label: '📦 Archives' },
+                  { id: 'code', label: '💻 Code' },
+                  { id: 'folders', label: '📁 Folders' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => { setFilterType(filterType === opt.id ? null : opt.id); setShowFilterMenu(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      filterType === opt.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'text-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* New folder button */}
           <button

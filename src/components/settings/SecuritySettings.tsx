@@ -75,7 +75,7 @@ export function SecuritySettings({ has2FA = false, onChangePassword, onToggle2FA
                             <Key size={20} className="text-muted-foreground" />
                             <div>
                                 <span className="font-medium text-foreground">Password</span>
-                                <p className="text-sm text-muted-foreground">Last changed 30 days ago</p>
+                                <p className="text-sm text-muted-foreground">Change your account password</p>
                             </div>
                         </div>
                         <button

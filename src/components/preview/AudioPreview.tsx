@@ -10,7 +10,6 @@ import {
     SkipForward,
     Download,
     Repeat,
-    Shuffle,
     Music,
     Loader2,
     AlertCircle,
@@ -287,10 +286,6 @@ export function AudioPreview({
 
                 {/* Controls */}
                 <div className="flex items-center justify-center gap-6">
-                    {/* Shuffle (placeholder) */}
-                    <button className="text-white/40 hover:text-white transition-colors">
-                        <Shuffle size={20} />
-                    </button>
 
                     {/* Skip back */}
                     <button

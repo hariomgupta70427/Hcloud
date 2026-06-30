@@ -39,7 +39,7 @@ export default function TrashPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Trash</h1>
           <p className="text-muted-foreground mt-1">
-            Items in trash are automatically deleted after 30 days
+            Items in trash remain until you permanently delete them
           </p>
         </div>
 

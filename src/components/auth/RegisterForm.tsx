@@ -30,7 +30,7 @@ const steps = [
 
 export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void }) {
   const navigate = useNavigate();
-  const { register: registerUser, isLoading } = useAuthStore();
+  const { register: registerUser, loginWithGoogle, isLoading } = useAuthStore();
   const [currentStep, setCurrentStep] = useState(1);
   const [showPassword, setShowPassword] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
@@ -154,9 +154,9 @@ export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void
           toast.error(result.error || 'Failed to send verification code');
         }
       } else {
-        // For managed mode, simulate OTP (or implement Firebase Phone Auth)
+        // Managed mode: no phone verification needed (email+password auth)
+        // Mark as verified and auto-advance
         setOtpSent(true);
-        toast.success('Verification code sent!');
       }
     } catch (error) {
       console.error('Send OTP error:', error);
@@ -252,7 +252,7 @@ export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void
           }
         }
       } else {
-        // For managed mode, simulate verification
+        // For managed mode, skip OTP verification entirely
         toast.success('Phone verified successfully!');
       }
     } catch (error) {
@@ -263,13 +263,19 @@ export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void
     }
   };
 
-  const handleGoogleSignup = () => {
-    console.log('Google signup');
+  const handleGoogleSignup = async () => {
+    try {
+      await loginWithGoogle();
+      navigate('/dashboard');
+    } catch (error: any) {
+      toast.error(error.message || 'Google sign-up failed');
+    }
   };
 
   // Check if OTP is complete and ready for verification
   const isOtpComplete = otpDigits.every(d => d !== '');
-  const isVerified = storageMode === 'byod' ? !!telegramSession : otpSent;
+  // For managed mode, phone step is optional — always considered verified
+  const isVerified = storageMode === 'byod' ? !!telegramSession : true;
 
   return (
     <motion.div

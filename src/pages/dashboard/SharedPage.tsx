@@ -39,9 +39,9 @@ export default function SharedPage() {
               key={file.id}
               file={file}
               isSelected={selectedFiles.includes(file.id)}
-              onSelect={selectFile}
-              onStar={toggleStar}
-              onDelete={removeFile}
+              onSelect={() => selectFile(file.id)}
+              onStar={() => toggleStar(file.id)}
+              onDelete={() => removeFile(file.id)}
             />
           ))}
         </div>
@@ -62,9 +62,9 @@ export default function SharedPage() {
                   key={file.id}
                   file={file}
                   isSelected={selectedFiles.includes(file.id)}
-                  onSelect={selectFile}
-                  onStar={toggleStar}
-                  onDelete={removeFile}
+                  onSelect={() => selectFile(file.id)}
+                  onStar={() => toggleStar(file.id)}
+                  onDelete={() => removeFile(file.id)}
                 />
               ))}
             </tbody>

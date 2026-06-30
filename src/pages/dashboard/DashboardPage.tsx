@@ -188,6 +188,7 @@ export default function DashboardPage() {
               {recentFiles.map((file) => (
                 <div
                   key={file.id}
+                  onClick={() => navigate('/dashboard/files')}
                   className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
                 >
                   <div className="w-10 h-10 rounded-lg bg-muted/50 flex items-center justify-center">
@@ -264,6 +265,7 @@ export default function DashboardPage() {
             {starredFiles.map((file) => (
               <div
                 key={file.id}
+                onClick={() => navigate('/dashboard/files')}
                 className="p-4 rounded-xl bg-card border border-border hover:border-primary/30 transition-all cursor-pointer"
               >
                 <div className="w-12 h-12 rounded-lg bg-muted/50 flex items-center justify-center mb-3">
