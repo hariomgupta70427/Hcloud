@@ -1,15 +1,49 @@
+import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Users } from 'lucide-react';
+import { toast } from 'sonner';
 import { useFileStore } from '@/stores/fileStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { FileCard } from '@/components/file/FileCard';
 import { FileRow } from '@/components/file/FileRow';
+import { FileCardSkeleton } from '@/components/common/Skeleton';
+import { PreviewModal } from '@/components/preview/PreviewModal';
+import { useFileActions } from '@/hooks/useFileActions';
 
 export default function SharedPage() {
-  const { files, selectedFiles, selectFile, toggleStar, removeFile } = useFileStore();
+  const { user } = useAuthStore();
+  const {
+    files,
+    selectedFiles,
+    isLoading,
+    loadSharedFiles,
+    selectFile,
+    toggleStar,
+    deleteItem,
+  } = useFileStore();
   const { viewMode } = useUIStore();
+  const { previewFile, openFile, downloadFile, downloadPreviewFile, closePreview } = useFileActions();
 
-  const sharedFiles = files.filter(f => f.isShared);
+  // Load shared files on mount
+  useEffect(() => {
+    if (user?.id) {
+      loadSharedFiles(user.id);
+    }
+  }, [user?.id, loadSharedFiles]);
+
+  const sharedFiles = files.filter((f) => f.isShared);
+
+  // Copy the public share link so the user always has a link to hand out.
+  const copyShareLink = async (fileId: string) => {
+    const link = `${window.location.origin}/s/${fileId}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      toast.success('Share link copied to clipboard');
+    } catch {
+      toast.error('Could not copy link');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -20,7 +54,13 @@ export default function SharedPage() {
         </p>
       </div>
 
-      {sharedFiles.length === 0 ? (
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <FileCardSkeleton key={i} />
+          ))}
+        </div>
+      ) : sharedFiles.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -40,8 +80,11 @@ export default function SharedPage() {
               file={file}
               isSelected={selectedFiles.includes(file.id)}
               onSelect={() => selectFile(file.id)}
+              onClick={() => openFile(file)}
               onStar={() => toggleStar(file.id)}
-              onDelete={() => removeFile(file.id)}
+              onDelete={() => deleteItem(file.id)}
+              onDownload={() => downloadFile(file)}
+              onShare={() => copyShareLink(file.id)}
             />
           ))}
         </div>
@@ -63,14 +106,24 @@ export default function SharedPage() {
                   file={file}
                   isSelected={selectedFiles.includes(file.id)}
                   onSelect={() => selectFile(file.id)}
+                  onClick={() => openFile(file)}
                   onStar={() => toggleStar(file.id)}
-                  onDelete={() => removeFile(file.id)}
+                  onDelete={() => deleteItem(file.id)}
+                  onDownload={() => downloadFile(file)}
+                  onShare={() => copyShareLink(file.id)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <PreviewModal
+        file={previewFile}
+        isOpen={!!previewFile}
+        onClose={closePreview}
+        onDownload={downloadPreviewFile}
+      />
     </div>
   );
 }

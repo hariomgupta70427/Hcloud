@@ -266,6 +266,10 @@ export function RegisterForm({ onSwitchToLogin }: { onSwitchToLogin?: () => void
   const handleGoogleSignup = async () => {
     try {
       await loginWithGoogle();
+      toast.success('Signed up with Google', {
+        description: 'Your account uses HCloud Managed Storage. You can switch to your own Telegram (BYOD) anytime in Settings → Storage.',
+        duration: 6000,
+      });
       navigate('/dashboard');
     } catch (error: any) {
       toast.error(error.message || 'Google sign-up failed');

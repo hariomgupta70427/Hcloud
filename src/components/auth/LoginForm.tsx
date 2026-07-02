@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { motion } from 'framer-motion';
 import { Mail, Lock, Cloud } from 'lucide-react';
+import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
 import { AuthInput, AuthButton } from './AuthInput';
 import { SocialButtons } from './SocialButtons';
@@ -46,6 +47,10 @@ export function LoginForm({ onSwitchToSignup }: LoginFormProps) {
   const handleGoogleLogin = async () => {
     try {
       await loginWithGoogle();
+      toast.success('Signed in with Google', {
+        description: 'Your account uses HCloud Managed Storage. You can switch to your own Telegram (BYOD) anytime in Settings → Storage.',
+        duration: 6000,
+      });
       navigate('/dashboard');
     } catch (error) {
       console.error('Google login error:', error);

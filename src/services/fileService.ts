@@ -8,7 +8,6 @@ import {
     deleteDoc,
     query,
     where,
-    orderBy,
     serverTimestamp,
     onSnapshot,
     Unsubscribe,
@@ -157,18 +156,22 @@ export async function getFilesInFolder(
 }
 
 // Get starred files
+// NOTE: We intentionally avoid orderBy() here. Combining where() + orderBy()
+// on different fields requires a Firestore composite index; if that index is
+// not deployed the query throws and the page appears empty. We sort client-side
+// instead so the feature works without any index deployment.
 export async function getStarredFiles(userId: string): Promise<FileItem[]> {
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('isStarred', '==', true),
-        orderBy('updatedAt', 'desc')
+        where('isStarred', '==', true)
     );
 
     const snapshot = await getDocs(q);
     return snapshot.docs
         .map((doc) => docToFileItem(doc.id, doc.data()))
-        .filter(f => !f.isDeleted);
+        .filter(f => !f.isDeleted)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 // Get recent files
@@ -176,14 +179,14 @@ export async function getRecentFiles(userId: string, limit = 20): Promise<FileIt
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('type', '==', 'file'),
-        orderBy('updatedAt', 'desc')
+        where('type', '==', 'file')
     );
 
     const snapshot = await getDocs(q);
     return snapshot.docs
         .map((doc) => docToFileItem(doc.id, doc.data()))
         .filter(f => !f.isDeleted)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
         .slice(0, limit);
 }
 
@@ -192,14 +195,14 @@ export async function getSharedFiles(userId: string): Promise<FileItem[]> {
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('isShared', '==', true),
-        orderBy('updatedAt', 'desc')
+        where('isShared', '==', true)
     );
 
     const snapshot = await getDocs(q);
     return snapshot.docs
         .map((doc) => docToFileItem(doc.id, doc.data()))
-        .filter(f => !f.isDeleted);
+        .filter(f => !f.isDeleted)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 // Create a new folder
 export async function createFolder(data: CreateFolderData): Promise<FileItem> {
@@ -219,6 +222,7 @@ export async function createFolder(data: CreateFolderData): Promise<FileItem> {
         userId: data.userId,
         isStarred: false,
         isShared: false,
+        isDeleted: false,
         path,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -256,6 +260,7 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         userId: data.userId,
         isStarred: false,
         isShared: false,
+        isDeleted: false,
         path,
         storageType: data.storageType || 'managed',
         createdAt: serverTimestamp(),
@@ -448,12 +453,17 @@ export async function getTrashItems(userId: string): Promise<FileItem[]> {
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('isDeleted', '==', true),
-        orderBy('deletedAt', 'desc')
+        where('isDeleted', '==', true)
     );
 
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((doc) => docToFileItem(doc.id, doc.data()));
+    return snapshot.docs
+        .map((doc) => docToFileItem(doc.id, doc.data()))
+        .sort((a, b) => {
+            const at = a.deletedAt?.getTime() ?? 0;
+            const bt = b.deletedAt?.getTime() ?? 0;
+            return bt - at;
+        });
 }
 
 // Real-time listener for files
@@ -462,16 +472,19 @@ export function subscribeToFiles(
     folderId: string | null,
     callback: (files: FileItem[]) => void
 ): Unsubscribe {
+    // NOTE: We do NOT use where('isDeleted', '!=', true) because a '!=' filter
+    // excludes any document that is missing the isDeleted field entirely, and it
+    // also forces a composite index. We filter deleted items client-side instead.
     const q = query(
         filesCollection,
         where('userId', '==', userId),
-        where('parentId', '==', folderId),
-        where('isDeleted', '!=', true)
+        where('parentId', '==', folderId)
     );
 
     return onSnapshot(q, (snapshot) => {
         const files = snapshot.docs
             .map((doc) => docToFileItem(doc.id, doc.data()))
+            .filter((file) => !file.isDeleted)
             .sort((a, b) => {
                 if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
                 return a.name.localeCompare(b.name);

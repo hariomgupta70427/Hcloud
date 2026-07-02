@@ -42,3 +42,8 @@ src/services/telegramService.ts
 # src/services/telegramService.ts
 PRD.md
 PRD.md
+DEPLOY.md
+firebase.json
+firestore.indexes.json
+firebase.json
+firebase.json

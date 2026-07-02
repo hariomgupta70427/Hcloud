@@ -19,16 +19,36 @@ import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { NewFolderDialog } from '@/components/file/NewFolderDialog';
 import { UploadModal } from '@/components/file/UploadModal';
+import { PreviewModal } from '@/components/preview/PreviewModal';
 import { useUpload } from '@/hooks/useUpload';
+import { useFileActions } from '@/hooks/useFileActions';
+import * as fileService from '@/services/fileService';
+import { FileItem } from '@/services/fileService';
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const { files, createFolder } = useFileStore();
+  const { createFolder } = useFileStore();
   const { user } = useAuthStore();
   const { uploadFiles, uploadingFiles, isUploading, clearCompleted } = useUpload();
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const { searchQuery } = useUIStore();
+  const { previewFile, openFile, downloadPreviewFile, closePreview } = useFileActions();
+
+  // Load ALL of the user's (non-deleted) files for the dashboard overview.
+  // Kept in local state so it doesn't clobber the folder-scoped store used by
+  // the Files page. Recent / Starred / type counts are all derived from this.
+  const [allFiles, setAllFiles] = useState<FileItem[]>([]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    fileService
+      .getUserFiles(user.id)
+      .then((f) => setAllFiles(f.filter((item) => !item.isDeleted)))
+      .catch((err) => console.error('Failed to load dashboard files:', err));
+  }, [user?.id]);
+
+  const files = allFiles;
 
   // Navigate to files page on search
   useEffect(() => {
@@ -188,7 +208,7 @@ export default function DashboardPage() {
               {recentFiles.map((file) => (
                 <div
                   key={file.id}
-                  onClick={() => navigate('/dashboard/files')}
+                  onClick={() => openFile(file)}
                   className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
                 >
                   <div className="w-10 h-10 rounded-lg bg-muted/50 flex items-center justify-center">
@@ -265,7 +285,7 @@ export default function DashboardPage() {
             {starredFiles.map((file) => (
               <div
                 key={file.id}
-                onClick={() => navigate('/dashboard/files')}
+                onClick={() => openFile(file)}
                 className="p-4 rounded-xl bg-card border border-border hover:border-primary/30 transition-all cursor-pointer"
               >
                 <div className="w-12 h-12 rounded-lg bg-muted/50 flex items-center justify-center mb-3">
@@ -296,6 +316,14 @@ export default function DashboardPage() {
         uploadingFiles={uploadingFiles}
         isUploading={isUploading}
         onClearCompleted={clearCompleted}
+      />
+
+      {/* File Preview Modal */}
+      <PreviewModal
+        file={previewFile}
+        isOpen={!!previewFile}
+        onClose={closePreview}
+        onDownload={downloadPreviewFile}
       />
     </div>
   );

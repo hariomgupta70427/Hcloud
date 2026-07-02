@@ -1,15 +1,37 @@
+import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Star } from 'lucide-react';
 import { useFileStore } from '@/stores/fileStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { FileCard } from '@/components/file/FileCard';
 import { FileRow } from '@/components/file/FileRow';
+import { FileCardSkeleton } from '@/components/common/Skeleton';
+import { PreviewModal } from '@/components/preview/PreviewModal';
+import { useFileActions } from '@/hooks/useFileActions';
 
 export default function StarredPage() {
-  const { files, selectedFiles, selectFile, toggleStar, removeFile } = useFileStore();
+  const { user } = useAuthStore();
+  const {
+    files,
+    selectedFiles,
+    isLoading,
+    loadStarredFiles,
+    selectFile,
+    toggleStar,
+    deleteItem,
+  } = useFileStore();
   const { viewMode } = useUIStore();
+  const { previewFile, openFile, downloadFile, downloadPreviewFile, closePreview } = useFileActions();
 
-  const starredFiles = files.filter(f => f.isStarred);
+  // Load starred files on mount
+  useEffect(() => {
+    if (user?.id) {
+      loadStarredFiles(user.id);
+    }
+  }, [user?.id, loadStarredFiles]);
+
+  const starredFiles = files.filter((f) => f.isStarred);
 
   return (
     <div className="space-y-6">
@@ -20,7 +42,13 @@ export default function StarredPage() {
         </p>
       </div>
 
-      {starredFiles.length === 0 ? (
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <FileCardSkeleton key={i} />
+          ))}
+        </div>
+      ) : starredFiles.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -39,9 +67,11 @@ export default function StarredPage() {
               key={file.id}
               file={file}
               isSelected={selectedFiles.includes(file.id)}
-              onSelect={selectFile}
-              onStar={toggleStar}
-              onDelete={removeFile}
+              onSelect={() => selectFile(file.id)}
+              onClick={() => openFile(file)}
+              onStar={() => toggleStar(file.id)}
+              onDelete={() => deleteItem(file.id)}
+              onDownload={() => downloadFile(file)}
             />
           ))}
         </div>
@@ -62,15 +92,24 @@ export default function StarredPage() {
                   key={file.id}
                   file={file}
                   isSelected={selectedFiles.includes(file.id)}
-                  onSelect={selectFile}
-                  onStar={toggleStar}
-                  onDelete={removeFile}
+                  onSelect={() => selectFile(file.id)}
+                  onClick={() => openFile(file)}
+                  onStar={() => toggleStar(file.id)}
+                  onDelete={() => deleteItem(file.id)}
+                  onDownload={() => downloadFile(file)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <PreviewModal
+        file={previewFile}
+        isOpen={!!previewFile}
+        onClose={closePreview}
+        onDownload={downloadPreviewFile}
+      />
     </div>
   );
 }

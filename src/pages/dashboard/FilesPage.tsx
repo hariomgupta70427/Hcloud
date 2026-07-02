@@ -288,8 +288,9 @@ export default function FilesPage() {
 
       const previewType = getPreviewType(file.name, file.mimeType);
 
-      // ── Audio / Video: instant streaming via Vercel proxy ──
-      if (previewType === 'audio' || previewType === 'video') {
+      // ── Streamed types: audio / video (native player) and office
+      //    (Google Docs Viewer needs a PUBLIC ABSOLUTE URL). ──
+      if (previewType === 'audio' || previewType === 'video' || previewType === 'office') {
         let streamUrl: string;
 
         if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
@@ -308,14 +309,14 @@ export default function FilesPage() {
               toast.error('Failed to prepare stream');
               return;
             }
-            streamUrl = `/api/telegram/stream?token=${tokenData.token}`;
+            streamUrl = `${window.location.origin}/api/telegram/stream?token=${tokenData.token}`;
           } catch (err) {
             toast.error('Failed to prepare stream');
             return;
           }
         } else {
-          // Managed: stream via Vercel proxy using Bot API
-          streamUrl = getManagedStreamUrl(file.telegramFileId);
+          // Managed: stream via Vercel proxy using Bot API (absolute URL)
+          streamUrl = `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`;
         }
 
         setPreviewFile({

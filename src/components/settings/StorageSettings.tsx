@@ -115,13 +115,24 @@ export function StorageSettings({ currentMode, isVerified = false, onSwitchMode,
                                 </span>
                             </div>
 
-                            {!isVerified && onConnect && (
+                            {/*
+                              * Always expose a connect/reconnect action in BYOD mode.
+                              * Previously this button was hidden once verified, which left
+                              * users with an expired/invalid Telegram session unable to
+                              * re-authenticate — so their files could neither upload nor open.
+                              */}
+                            {onConnect && (
                                 <button
                                     onClick={(e) => { e.stopPropagation(); onConnect(); }}
                                     className="mt-2 w-full px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
                                 >
-                                    Connect Telegram
+                                    {isVerified ? 'Reconnect Telegram' : 'Connect Telegram'}
                                 </button>
+                            )}
+                            {isVerified && (
+                                <p className="text-xs text-muted-foreground text-center">
+                                    Files won't upload or open? Reconnect to refresh your Telegram session.
+                                </p>
                             )}
                         </div>
                     )}

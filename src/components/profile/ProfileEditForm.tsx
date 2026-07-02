@@ -1,6 +1,41 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, User, Camera, Save, AlertCircle, Loader2 } from 'lucide-react';
+import { X, User, Camera, Save, AlertCircle, Loader2, Upload } from 'lucide-react';
+
+// Resize + compress an image file to a small JPEG data URL so it can be stored
+// directly in Firestore (no separate storage bucket needed for avatars).
+function resizeImageToDataURL(file: File, maxSize = 256): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const img = new window.Image();
+            img.onload = () => {
+                let { width, height } = img;
+                if (width > height && width > maxSize) {
+                    height = Math.round((height * maxSize) / width);
+                    width = maxSize;
+                } else if (height > maxSize) {
+                    width = Math.round((width * maxSize) / height);
+                    height = maxSize;
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    reject(new Error('Canvas not supported'));
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', 0.85));
+            };
+            img.onerror = () => reject(new Error('Failed to load image'));
+            img.src = reader.result as string;
+        };
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+    });
+}
 
 interface ProfileEditFormProps {
     isOpen: boolean;
@@ -19,7 +54,30 @@ export function ProfileEditForm({ isOpen, user, onClose, onSave }: ProfileEditFo
     const [phone, setPhone] = useState(user.phone || '');
     const [avatar, setAvatar] = useState(user.avatar || '');
     const [isLoading, setIsLoading] = useState(false);
+    const [isProcessingImage, setIsProcessingImage] = useState(false);
     const [error, setError] = useState('');
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) {
+            setError('Please choose an image file');
+            return;
+        }
+        setIsProcessingImage(true);
+        setError('');
+        try {
+            const dataUrl = await resizeImageToDataURL(file);
+            setAvatar(dataUrl);
+        } catch (err) {
+            setError('Failed to process image');
+        } finally {
+            setIsProcessingImage(false);
+            // Reset so selecting the same file again re-triggers change
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -80,23 +138,55 @@ export function ProfileEditForm({ isOpen, user, onClose, onSave }: ProfileEditFo
 
                         {/* Form */}
                         <form onSubmit={handleSubmit} className="p-4 space-y-4">
-                            {/* Avatar URL */}
+                            {/* Avatar */}
                             <div className="space-y-2">
-                                <label className="text-sm font-medium text-foreground">Avatar URL</label>
-                                <div className="flex gap-3">
-                                    <div className="w-16 h-16 rounded-xl bg-muted flex items-center justify-center overflow-hidden flex-shrink-0">
+                                <label className="text-sm font-medium text-foreground">Profile Picture</label>
+                                <div className="flex items-center gap-4">
+                                    <button
+                                        type="button"
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="relative w-20 h-20 rounded-xl bg-muted flex items-center justify-center overflow-hidden flex-shrink-0 group border-2 border-transparent hover:border-primary transition-colors"
+                                        title="Upload profile picture"
+                                    >
                                         {avatar ? (
                                             <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
                                         ) : (
                                             <Camera size={24} className="text-muted-foreground" />
                                         )}
+                                        <span className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                            {isProcessingImage ? (
+                                                <Loader2 size={20} className="text-white animate-spin" />
+                                            ) : (
+                                                <Camera size={20} className="text-white" />
+                                            )}
+                                        </span>
+                                    </button>
+                                    <div className="flex-1 space-y-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => fileInputRef.current?.click()}
+                                            disabled={isProcessingImage}
+                                            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium disabled:opacity-50"
+                                        >
+                                            <Upload size={16} />
+                                            {isProcessingImage ? 'Processing...' : 'Upload from device'}
+                                        </button>
+                                        {avatar && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setAvatar('')}
+                                                className="block text-xs text-muted-foreground hover:text-destructive transition-colors"
+                                            >
+                                                Remove picture
+                                            </button>
+                                        )}
                                     </div>
                                     <input
-                                        type="url"
-                                        value={avatar}
-                                        onChange={(e) => setAvatar(e.target.value)}
-                                        className="flex-1 px-4 py-3 rounded-xl bg-muted border-2 border-transparent focus:border-primary outline-none text-sm"
-                                        placeholder="https://example.com/avatar.jpg"
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={handleFileSelect}
+                                        className="hidden"
                                     />
                                 </div>
                             </div>

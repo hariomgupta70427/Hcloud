@@ -1,14 +1,39 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { ProfileCard, ProfileEditForm, StorageInfo } from '@/components/profile';
+import * as fileService from '@/services/fileService';
+import { FileItem } from '@/services/fileService';
+
+// Relative time formatter for the activity list ("2 hours ago", "Yesterday").
+function formatRelativeTime(date: Date): string {
+    const diffMs = Date.now() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 30) return `${diffDays} days ago`;
+    return date.toLocaleDateString();
+}
 
 export default function ProfilePage() {
     const navigate = useNavigate();
     const { user, updateProfile } = useAuthStore();
     const [showEditForm, setShowEditForm] = useState(false);
+    const [stats, setStats] = useState<{ totalFiles: number; totalFolders: number; totalSize: number } | null>(null);
+    const [recentActivity, setRecentActivity] = useState<FileItem[]>([]);
+
+    // Load real storage stats + recent files for this user.
+    useEffect(() => {
+        if (!user?.id) return;
+        fileService.getStorageStats(user.id).then(setStats).catch(console.error);
+        fileService.getRecentFiles(user.id, 5).then(setRecentActivity).catch(console.error);
+    }, [user?.id]);
 
     if (!user) {
         return null;
@@ -40,14 +65,14 @@ export default function ProfilePage() {
                 onEditProfile={() => setShowEditForm(true)}
             />
 
-            {/* Storage Info */}
+            {/* Storage Info — real values from Firestore */}
             <StorageInfo
-                usedBytes={1024 * 1024 * 1024 * 2.5} // 2.5 GB
-                fileCount={156}
+                usedBytes={stats?.totalSize ?? 0}
+                fileCount={stats?.totalFiles ?? 0}
                 storageMode={user.storageMode}
             />
 
-            {/* Activity */}
+            {/* Activity — real recent files */}
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -55,19 +80,20 @@ export default function ProfilePage() {
                 className="p-6 rounded-2xl bg-card border border-border"
             >
                 <h3 className="font-semibold text-foreground mb-4">Recent Activity</h3>
-                <div className="space-y-4">
-                    {[
-                        { action: 'Uploaded 3 files', time: '2 hours ago' },
-                        { action: 'Shared document.pdf', time: '5 hours ago' },
-                        { action: 'Created folder "Projects"', time: 'Yesterday' },
-                        { action: 'Updated profile picture', time: '3 days ago' },
-                    ].map((item, index) => (
-                        <div key={index} className="flex items-center justify-between py-2 border-b border-border last:border-0">
-                            <span className="text-foreground">{item.action}</span>
-                            <span className="text-sm text-muted-foreground">{item.time}</span>
-                        </div>
-                    ))}
-                </div>
+                {recentActivity.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-2">No recent activity yet.</p>
+                ) : (
+                    <div className="space-y-4">
+                        {recentActivity.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                                <span className="text-foreground truncate mr-4">{item.name}</span>
+                                <span className="text-sm text-muted-foreground flex-shrink-0">
+                                    {formatRelativeTime(item.updatedAt)}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </motion.div>
 
             {/* Edit Form Modal */}
