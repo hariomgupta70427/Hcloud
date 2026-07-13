@@ -267,13 +267,11 @@ export default function FilesPage() {
   };
 
   const handleShare = async (settings: { password?: string; expiresAt?: Date }) => {
-    if (!shareFile) return;
-    try {
-      await shareItem(shareFile.id, settings);
-      setShareFile(null);
-    } catch (err) {
-      console.error('Failed to share:', err);
-    }
+    if (!shareFile) return '';
+    // Do NOT close the dialog here — the ShareDialog needs to stay open to
+    // display the generated link so the user can copy it. Closing it (the old
+    // behaviour) is exactly why "I can't get the link" happened.
+    return await shareItem(shareFile.id, settings);
   };
 
   const handleFileClick = async (file: FileItem) => {
@@ -790,12 +788,10 @@ export default function FilesPage() {
         <ShareDialog
           isOpen={!!shareFile}
           fileName={shareFile.name}
+          existingLink={shareFile.isShared ? `${window.location.origin}/s/${shareFile.id}` : undefined}
           onClose={() => setShareFile(null)}
-          onCreateLink={async (options) => {
-            await handleShare(options);
-            return `${window.location.origin}/s/${shareFile.id}`;
-          }}
-          onCopyLink={(link) => navigator.clipboard.writeText(link)}
+          onCreateLink={handleShare}
+          onCopyLink={() => toast.success('Link copied to clipboard')}
         />
       )}
 

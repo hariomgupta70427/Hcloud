@@ -147,28 +147,39 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
     }
 
     // --- HTTP Range Streaming Logic ---
-    const rangeHeader = req.headers.range || 'bytes=0-';
-    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    // If the client sends a Range header (video/audio players, resumable
+    // downloads) we honour it and reply 206. If it doesn't (browser <img>,
+    // PDF viewer, plain download) we send the WHOLE file with 200. We never
+    // truncate: previously a 1 MB cap corrupted every file over 1 MB.
+    const rangeHeader = req.headers.range as string | undefined;
+    const hasRange = !!rangeHeader;
+    const match = rangeHeader?.match(/bytes=(\d+)-(\d*)/);
     const start = match ? parseInt(match[1], 10) : 0;
-    const requestedEnd = (match && match[2]) ? parseInt(match[2], 10) : fileSize - 1;
-
-    // Vercel limit: max 1MB per request to avoid 10s timeout / 4.5MB payload cap
-    const MAX_CHUNK = 1048576; // 1MB
-    const serveEnd = Math.min(requestedEnd, start + MAX_CHUNK - 1, fileSize - 1);
+    const serveEnd = (match && match[2]) ? parseInt(match[2], 10) : fileSize - 1;
     const contentLength = serveEnd - start + 1;
 
     // MTProto offset must be aligned to 4KB (4096 bytes)
     const alignedStart = start - (start % 4096);
     const skipBytes = start - alignedStart;
 
-    res.writeHead(206, {
-        'Content-Type': contentType,
-        'Content-Range': `bytes ${start}-${serveEnd}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': contentLength.toString(),
-        'Cache-Control': 'public, max-age=3600',
-        'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
-    });
+    if (hasRange) {
+        res.writeHead(206, {
+            'Content-Type': contentType,
+            'Content-Range': `bytes ${start}-${serveEnd}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': contentLength.toString(),
+            'Cache-Control': 'public, max-age=3600',
+            'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
+        });
+    } else {
+        res.writeHead(200, {
+            'Content-Type': contentType,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': fileSize.toString(),
+            'Cache-Control': 'public, max-age=3600',
+            'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
+        });
+    }
 
     try {
         let bytesSent = 0;
@@ -206,7 +217,17 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
     }
 }
 
-// ─── Helper: pipe a fetch URL to the response with Range support ───
+// ─── Helper: pipe a Telegram file URL to the response ───
+//
+// Telegram's file endpoint serves files like a static asset and honours HTTP
+// Range requests. We simply forward the client's Range (if any) to Telegram,
+// mirror the upstream status (200 full / 206 partial) and headers, then stream
+// the body chunk-by-chunk. Streaming (not buffering) keeps memory flat and
+// avoids Vercel's response-body size cap, so files of any size download intact.
+//
+// The previous implementation hard-capped every response at 1 MB, which
+// silently truncated any file larger than 1 MB — the root cause of images,
+// PDFs and documents failing to open.
 async function pipeUrl(
     req: VercelRequest,
     res: VercelResponse,
@@ -214,38 +235,37 @@ async function pipeUrl(
     contentType: string,
     fileSize?: number,
 ) {
-    if (!fileSize) {
-        // Fallback for unknown size
-        const upstream = await fetch(url);
-        if (!upstream.ok) return res.status(502).json({ error: `Upstream ${upstream.status}` });
-        res.writeHead(200, { 'Content-Type': contentType });
-        const arrayBuf = await upstream.arrayBuffer();
-        res.end(Buffer.from(arrayBuf));
-        return;
+    const range = req.headers.range as string | undefined;
+
+    const upstream = await fetch(url, range ? { headers: { Range: range } } : undefined);
+    if (!upstream.ok && upstream.status !== 206) {
+        return res.status(502).json({ error: `Upstream ${upstream.status}` });
     }
 
-    const rangeHeader = req.headers.range || 'bytes=0-';
-    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-    const start = match ? parseInt(match[1], 10) : 0;
-    const requestedEnd = (match && match[2]) ? parseInt(match[2], 10) : fileSize - 1;
-
-    // Vercel limit: max 1MB per request to avoid timeout
-    const MAX_CHUNK = 1048576; // 1 MB
-    const serveEnd = Math.min(requestedEnd, start + MAX_CHUNK - 1, fileSize - 1);
-    const contentLength = serveEnd - start + 1;
-
-    const upstream = await fetch(url, { headers: { Range: `bytes=${start}-${serveEnd}` } });
-    if (!upstream.ok) return res.status(502).json({ error: `Upstream ${upstream.status}` });
-
-    res.writeHead(206, {
+    const headers: Record<string, string> = {
         'Content-Type': contentType,
-        'Content-Range': `bytes ${start}-${serveEnd}/${fileSize}`,
         'Accept-Ranges': 'bytes',
-        'Content-Length': contentLength.toString(),
         'Cache-Control': 'public, max-age=3600',
-    });
+    };
+    const contentRange = upstream.headers.get('content-range');
+    if (contentRange) headers['Content-Range'] = contentRange;
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) headers['Content-Length'] = contentLength;
+    else if (fileSize && !range) headers['Content-Length'] = fileSize.toString();
 
-    // Upstream has sent exactly the requested bytes
-    const arrayBuffer = await upstream.arrayBuffer();
-    return res.end(Buffer.from(arrayBuffer));
+    res.writeHead(upstream.status, headers);
+
+    const body = upstream.body as any;
+    if (!body) return res.end();
+
+    const reader = body.getReader();
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(Buffer.from(value));
+        }
+    } finally {
+        res.end();
+    }
 }

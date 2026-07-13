@@ -7,7 +7,7 @@ interface HeroPanelProps {
 
 const heroContent = {
     login: {
-        title: 'Welcome Back',
+        title: 'Hii',
         subtitle: 'Access your files from anywhere, anytime.',
         features: [
             { icon: Shield, text: 'End-to-end encrypted storage' },
