@@ -12,10 +12,10 @@ import {
   User,
   Settings,
   Menu,
-  X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useTheme } from '@/components/ThemeProvider';
+import MobileDrawer from './MobileDrawer';
 
 export default function Header() {
   const navigate = useNavigate();
@@ -50,10 +50,13 @@ export default function Header() {
   };
 
   return (
+    <>
+    <MobileDrawer open={showMobileSidebar} onClose={() => setShowMobileSidebar(false)} />
     <header className="sticky top-0 z-40 h-16 bg-background/80 backdrop-blur-xl border-b border-border/50 flex items-center px-4 lg:px-6 gap-3">
       {/* Mobile menu toggle */}
       <button
-        onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+        onClick={() => setShowMobileSidebar(true)}
+        aria-label="Open menu"
         className="md:hidden p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
       >
         <Menu size={20} />
@@ -193,5 +196,6 @@ export default function Header() {
         </div>
       </div>
     </header>
+    </>
   );
 }

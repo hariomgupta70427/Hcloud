@@ -1,80 +1,37 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Home,
-  FolderOpen,
-  Star,
-  Clock,
-  Share2,
-  Trash2,
-  Settings,
-  ChevronLeft,
-  ChevronRight,
-  Cloud,
-  HardDrive,
-} from 'lucide-react';
+import { ChevronLeft, ChevronRight, Cloud } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { useFileStore } from '@/stores/fileStore';
-import { getStorageStats } from '@/services/fileService';
 import { cn } from '@/lib/utils';
+import { navItems, isNavActive } from './navConfig';
+import StoragePanel from './StoragePanel';
 
-const navItems = [
-  { path: '/dashboard', icon: Home, label: 'Dashboard' },
-  { path: '/dashboard/files', icon: FolderOpen, label: 'My Files' },
-  { path: '/dashboard/starred', icon: Star, label: 'Starred' },
-  { path: '/dashboard/recent', icon: Clock, label: 'Recent' },
-  { path: '/dashboard/shared', icon: Share2, label: 'Shared' },
-  { path: '/dashboard/trash', icon: Trash2, label: 'Trash' },
-  { path: '/dashboard/settings', icon: Settings, label: 'Settings' },
-];
-
-// Managed accounts get a fixed Telegram Bot API quota; BYOD is effectively
-// unlimited (the user's own Telegram account).
-const MANAGED_QUOTA = 50 * 1024 * 1024 * 1024; // 50 GB
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i++;
-  }
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
-}
+const COLLAPSE_KEY = 'hcloud:sidebar-collapsed';
 
 export default function Sidebar() {
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  // Persist the collapsed state so the layout survives reloads.
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { files } = useFileStore();
-  const [stats, setStats] = useState({ totalFiles: 0, totalSize: 0 });
 
-  const isByod = user?.storageMode === 'byod';
-
-  // Load real storage stats on mount and whenever the file list changes
-  // (upload/delete), so the panel always reflects the true count + usage.
-  useEffect(() => {
-    if (!user?.id) return;
-    let cancelled = false;
-    getStorageStats(user.id)
-      .then((s) => {
-        if (!cancelled) setStats({ totalFiles: s.totalFiles, totalSize: s.totalSize });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, files.length]);
-
-  const usedPct = Math.min(100, (stats.totalSize / MANAGED_QUOTA) * 100);
-
-  const isActive = (path: string) => {
-    if (path === '/dashboard') return location.pathname === '/dashboard';
-    return location.pathname.startsWith(path);
+  const toggleCollapsed = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0');
+      } catch {
+        /* storage unavailable — keep in-memory state */
+      }
+      return next;
+    });
   };
 
   return (
@@ -84,7 +41,7 @@ export default function Sidebar() {
       transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
       className="hidden md:flex flex-col h-screen bg-sidebar-background border-r border-sidebar-border relative z-30 overflow-hidden"
     >
-      {/* Header */}
+      {/* Brand */}
       <div className="flex items-center justify-between h-16 px-4 border-b border-sidebar-border flex-shrink-0">
         <AnimatePresence mode="wait">
           {!isCollapsed && (
@@ -113,11 +70,12 @@ export default function Sidebar() {
       <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto scrollbar-hide">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const active = isActive(item.path);
+          const active = isNavActive(item.path, location.pathname);
           return (
             <button
               key={item.path}
               onClick={() => navigate(item.path)}
+              title={isCollapsed ? item.label : undefined}
               className={cn(
                 'relative w-full flex items-center rounded-xl transition-all duration-200 group',
                 isCollapsed ? 'justify-center px-2 py-3' : 'gap-3 px-3 py-2.5',
@@ -175,30 +133,7 @@ export default function Sidebar() {
             transition={{ duration: 0.2 }}
             className="px-4 py-3 border-t border-sidebar-border"
           >
-            <div className="p-3 rounded-xl bg-sidebar-accent/60">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <HardDrive size={14} className="text-sidebar-foreground/60" />
-                  <span className="text-xs font-medium text-sidebar-foreground/80">Storage</span>
-                </div>
-                <span className="text-[10px] font-medium text-sidebar-foreground/60">
-                  {stats.totalFiles} {stats.totalFiles === 1 ? 'file' : 'files'}
-                </span>
-              </div>
-              <div className="h-1.5 bg-sidebar-border rounded-full overflow-hidden mb-1.5">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${Math.max(usedPct, stats.totalSize > 0 ? 3 : 0)}%` }}
-                  transition={{ duration: 0.6, ease: 'easeOut' }}
-                  className="h-full rounded-full gradient-primary"
-                />
-              </div>
-              <p className="text-[10px] text-sidebar-foreground/50">
-                {isByod
-                  ? `${formatBytes(stats.totalSize)} used • Unlimited (BYOD)`
-                  : `${formatBytes(stats.totalSize)} of ${formatBytes(MANAGED_QUOTA)} used`}
-              </p>
-            </div>
+            <StoragePanel />
           </motion.div>
         )}
       </AnimatePresence>
@@ -237,8 +172,10 @@ export default function Sidebar() {
 
       {/* Collapse toggle */}
       <button
-        onClick={() => setIsCollapsed(!isCollapsed)}
-        className="absolute top-1/2 -translate-y-1/2 -right-3 w-6 h-6 rounded-full border border-sidebar-border bg-sidebar-background hover:bg-sidebar-accent flex items-center justify-center shadow-sm z-50 transition-colors"
+        onClick={toggleCollapsed}
+        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        className="absolute top-1/2 -translate-y-1/2 -right-3 w-6 h-6 rounded-full border border-sidebar-border bg-sidebar-background text-sidebar-foreground/70 hover:text-primary hover:border-primary/40 hover:scale-110 flex items-center justify-center shadow-md z-50 transition-all duration-200"
       >
         {isCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
       </button>

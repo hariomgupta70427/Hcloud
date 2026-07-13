@@ -198,7 +198,8 @@ export async function uploadVideoToTelegram(
 
 /**
  * Get file info and download URL from Telegram.
- * Uses the server-side stream proxy — no bot token needed client-side.
+ * Returns the server-side stream proxy URL, which handles getFile + download
+ * internally — no bot token is ever needed client-side.
  */
 export async function getFileFromTelegram(fileId: string): Promise<{
     success: boolean;
@@ -206,22 +207,10 @@ export async function getFileFromTelegram(fileId: string): Promise<{
     fileInfo?: TelegramFileInfo;
     error?: string;
 }> {
-    try {
-        // Use the server-side stream proxy as the download URL
-        // The stream endpoint handles getFile + download internally
-        const downloadUrl = `/api/telegram/stream?fileId=${encodeURIComponent(fileId)}`;
-
-        return {
-            success: true,
-            downloadUrl,
-        };
-    } catch (error: any) {
-        console.error('Telegram getFile error:', error);
-        return {
-            success: false,
-            error: error.message || 'Network error',
-        };
-    }
+    return {
+        success: true,
+        downloadUrl: `/api/telegram/stream?fileId=${encodeURIComponent(fileId)}`,
+    };
 }
 
 /**
