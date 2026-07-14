@@ -271,7 +271,12 @@ export default function FilesPage() {
     // Do NOT close the dialog here — the ShareDialog needs to stay open to
     // display the generated link so the user can copy it. Closing it (the old
     // behaviour) is exactly why "I can't get the link" happened.
-    return await shareItem(shareFile.id, settings);
+    // For BYOD files, pass the owner session + messageId so shareFile can mint
+    // an encrypted stream token the public page can use (owner has no session there).
+    const byod = (shareFile.storageType === 'byod' && shareFile.telegramMessageId && user?.byodConfig?.telegramSession)
+      ? { session: user.byodConfig.telegramSession, messageId: shareFile.telegramMessageId }
+      : undefined;
+    return await shareItem(shareFile.id, settings, byod);
   };
 
   const handleFileClick = async (file: FileItem) => {

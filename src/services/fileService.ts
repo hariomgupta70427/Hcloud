@@ -35,6 +35,7 @@ export interface FileItem {
         password?: string;
         expiresAt?: Date;
         link?: string;
+        streamToken?: string; // BYOD: opaque encrypted stream token for the public page
     };
     path: string;
     thumbnail?: string;
@@ -375,7 +376,12 @@ async function hashPassword(password: string): Promise<string> {
 // Share file
 export async function shareFile(
     id: string,
-    settings: { password?: string; expiresAt?: Date }
+    settings: { password?: string; expiresAt?: Date },
+    // For BYOD files the public page has no owner session, so at share time
+    // (owner is authenticated) we mint a long-lived, encrypted stream token and
+    // store it. The raw session is NEVER written to Firestore — only the opaque
+    // token, which the stream endpoint can decrypt server-side.
+    byod?: { session: string; messageId: number }
 ): Promise<string> {
     const publicShareLink = `${window.location.origin}/s/${id}`;
 
@@ -385,12 +391,34 @@ export async function shareFile(
         hashedPassword = await hashPassword(settings.password);
     }
 
+    // Mint the BYOD stream token if this is a BYOD file.
+    let streamToken: string | null = null;
+    if (byod?.session && byod?.messageId) {
+        try {
+            // Token lifetime tracks the share's expiry (capped server-side at 7 days),
+            // else defaults to the 7-day maximum.
+            const ttlSeconds = settings.expiresAt
+                ? Math.max(60, Math.floor((settings.expiresAt.getTime() - Date.now()) / 1000))
+                : 7 * 24 * 60 * 60;
+            const res = await fetch('/api/telegram/session-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: byod.session, messageId: byod.messageId, ttlSeconds }),
+            });
+            const data = await res.json();
+            if (data.token) streamToken = data.token;
+        } catch (err) {
+            console.warn('Failed to mint BYOD stream token for share:', err);
+        }
+    }
+
     await updateDoc(doc(db, 'files', id), {
         isShared: true,
         shareSettings: {
             password: hashedPassword,
             link: publicShareLink,
             expiresAt: settings.expiresAt ? Timestamp.fromDate(settings.expiresAt) : null,
+            streamToken,
         },
         updatedAt: serverTimestamp(),
     });

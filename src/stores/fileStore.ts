@@ -38,7 +38,7 @@ interface FileState {
   restoreItem: (id: string) => Promise<void>;
   permanentDeleteItem: (id: string) => Promise<void>;
   emptyTrash: () => Promise<void>;
-  shareItem: (id: string, settings: { password?: string; expiresAt?: Date }) => Promise<string>;
+  shareItem: (id: string, settings: { password?: string; expiresAt?: Date }, byod?: { session: string; messageId: number }) => Promise<string>;
   setLoading: (loading: boolean) => void;
   setUploadProgress: (fileId: string, progress: number) => void;
   removeUploadProgress: (fileId: string) => void;
@@ -302,9 +302,9 @@ export const useFileStore = create<FileState>((set, get) => ({
     }
   },
 
-  shareItem: async (id, settings) => {
+  shareItem: async (id, settings, byod) => {
     try {
-      const shareLink = await fileService.shareFile(id, settings);
+      const shareLink = await fileService.shareFile(id, settings, byod);
       set((state) => ({
         files: state.files.map((f) =>
           f.id === id ? { ...f, isShared: true } : f

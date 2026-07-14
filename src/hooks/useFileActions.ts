@@ -35,59 +35,40 @@ export function useFileActions(options?: { onOpenFolder?: (file: FileItem) => vo
         }
 
         const previewType = getPreviewType(file.name, file.mimeType);
+        const isByod = file.storageType === 'byod' && !!file.telegramMessageId && !!user?.byodConfig?.telegramSession;
 
-        // ── Streamed types: audio / video (native player) and office
-        //    (rendered by Google Docs Viewer, which needs a PUBLIC ABSOLUTE URL).
-        //    We build absolute URLs off window.location.origin so the same code
-        //    path serves both same-origin <video>/<audio> and the external viewer.
-        if (previewType === 'audio' || previewType === 'video' || previewType === 'office') {
-            let streamUrl: string;
-
-            if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-                try {
-                    const tokenRes = await fetch('/api/telegram/session-token', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            session: user.byodConfig.telegramSession,
-                            messageId: file.telegramMessageId,
-                        }),
-                    });
-                    const tokenData = await tokenRes.json();
-                    if (!tokenData.token) {
-                        toast.error('Failed to prepare stream');
-                        return;
-                    }
-                    streamUrl = `${window.location.origin}/api/telegram/stream?token=${tokenData.token}`;
-                } catch (err) {
-                    toast.error('Failed to prepare stream');
-                    return;
-                }
-            } else {
-                streamUrl = `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`;
-            }
-
+        // ── Managed streamed types: audio / video (native player) and office
+        //    (Google Docs Viewer, which needs a PUBLIC ABSOLUTE URL). BYOD files
+        //    do NOT stream through Vercel — gramjs only runs reliably on the
+        //    dedicated Render server — so BYOD (any type) takes the blob path.
+        if (!isByod && (previewType === 'audio' || previewType === 'video' || previewType === 'office')) {
             setPreviewFile({
                 id: file.id,
                 name: file.name,
-                url: streamUrl,
+                url: `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`,
                 type: previewType,
                 mimeType: file.mimeType,
             });
             return;
         }
 
-        // ── Non-media files: download blob first ──
+        // ── Everything else: fetch a blob URL first ──
+        //   - BYOD: download via the Render server (persistent gramjs).
+        //   - Managed non-media: same-origin stream proxy URL.
         setIsLoadingPreview(true);
         toast.loading('Loading file...', { id: 'file-loading' });
 
         try {
             let downloadUrl: string | undefined;
 
-            if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-                const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
+            if (isByod) {
+                const result = await downloadBYODFile(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
                 if (result.success && result.blobUrl) {
                     downloadUrl = result.blobUrl;
+                } else {
+                    toast.error(result.error || 'Failed to load file', { id: 'file-loading' });
+                    setIsLoadingPreview(false);
+                    return;
                 }
             } else {
                 const result = await getFileFromTelegram(file.telegramFileId);

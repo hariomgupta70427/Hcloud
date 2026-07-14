@@ -1,20 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { TelegramClient, sessions } from 'telegram';
-import bigInt from 'big-integer';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { getSessionFromToken } from './session-token';
-const { StringSession } = sessions;
 
 /**
- * Unified streaming proxy for all Telegram files.
+ * Unified streaming proxy for Telegram files.
  *
- * Supports three modes:
- *   1. Managed (Bot API):   GET /api/telegram/stream?fileId=<id>
- *   2. BYOD (User API):     GET /api/telegram/stream?token=<short-lived-token>
- *   3. BYOD (legacy):       GET /api/telegram/stream?messageId=<id>&session=<session>
+ *   1. Managed (Bot API):  GET /api/telegram/stream?fileId=<id>
+ *   2. BYOD (User API):    GET /api/telegram/stream?token=<encrypted-token>
+ *   3. BYOD (legacy):      GET /api/telegram/stream?messageId=<id>&session=<session>
  *
- * Everything is streamed chunk-by-chunk (never buffered) so memory stays flat,
- * Vercel's ~4.5 MB response-body cap is never hit, and files of any size arrive
- * intact. <audio>/<video> elements play instantly because we mirror Range.
+ * IMPORTANT: gramjs ('telegram') is imported LAZILY, only inside the BYOD path.
+ * A top-level `import { TelegramClient } from 'telegram'` was crashing the whole
+ * serverless function at cold start — which is why even managed requests (that
+ * never touch gramjs) returned 500. Keeping the managed path free of gramjs
+ * means it is a plain, dependency-light fetch proxy that always works.
  */
 
 // Vercel: allow up to 60s so large media has time to stream before timeout.
@@ -41,7 +41,6 @@ function guessMime(path: string): string {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
@@ -56,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const session = req.query.session as string | undefined;
 
     try {
-        // ── BYOD mode via secure token (preferred) ──
+        // ── BYOD via encrypted token (preferred) ──
         if (token) {
             const tokenData = getSessionFromToken(token);
             if (!tokenData) {
@@ -65,12 +64,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return await handleBYOD(req, res, tokenData.messageId, tokenData.session);
         }
 
-        // ── BYOD mode via raw session (legacy, less secure) ──
+        // ── BYOD via raw session (legacy) ──
         if (messageId && session) {
             return await handleBYOD(req, res, parseInt(messageId), session);
         }
 
-        // ── Managed mode (Bot API) ──
+        // ── Managed (Bot API) — no gramjs, pure fetch ──
         if (fileId) {
             return await handleManaged(req, res, fileId);
         }
@@ -79,19 +78,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch (error: any) {
         console.error('[Stream] Error:', error);
         // Headers may already be flushed mid-stream; only send JSON if we still can.
-        if (!res.headersSent) return res.status(500).json({ error: 'Streaming failed' });
+        if (!res.headersSent) {
+            return res.status(500).json({ error: error?.message || 'Streaming failed' });
+        }
         return res.end();
     }
 }
 
-// ─── Managed files: proxy Telegram Bot API download ───
+// ─── Managed files: proxy the Telegram Bot API download (no gramjs) ───
 async function handleManaged(req: VercelRequest, res: VercelResponse, fileId: string) {
     if (!BOT_TOKEN) return res.status(500).json({ error: 'Bot token not configured' });
 
-    // 1. Resolve file_path. Bot API getFile ONLY returns a file_path for files
-    //    <= 20 MB; anything larger fails here with "file is too big". There is
-    //    no Bot API path to download it, so surface that clearly instead of a
-    //    generic 404 the UI can't explain.
+    // Bot API getFile only returns a file_path for files <= 20 MB; larger files
+    // fail here with "file is too big" and cannot be served through the bot.
     const infoRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
     const info = await infoRes.json() as any;
     if (!info.ok || !info.result?.file_path) {
@@ -109,12 +108,21 @@ async function handleManaged(req: VercelRequest, res: VercelResponse, fileId: st
     const contentType = guessMime(filePath);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 
-    // 2. Pipe response
     return await pipeUrl(req, res, fileUrl, contentType, fileSize);
 }
 
-// ─── BYOD files: stream via gramjs and HTTP Range ───
+// ─── BYOD files: stream via gramjs + HTTP Range (gramjs loaded lazily) ───
 async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: number, session: string) {
+    if (!API_ID || !API_HASH) {
+        return res.status(500).json({ error: 'Telegram API credentials not configured' });
+    }
+
+    // Lazy import: keeps gramjs out of the module graph for managed requests, so
+    // a gramjs load failure can never take down the managed path.
+    const { TelegramClient, sessions } = await import('telegram');
+    const bigInt = (await import('big-integer')).default;
+    const { StringSession } = sessions;
+
     const client = new TelegramClient(new StringSession(session), API_ID, API_HASH, {
         connectionRetries: 3,
         useWSS: true,
@@ -122,10 +130,6 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
 
     try {
         await client.connect();
-        const me = await client.getMe();
-        if (!me) {
-            return res.status(401).json({ error: 'Invalid session' });
-        }
 
         const messages = await client.getMessages('me', { ids: [messageId] });
         if (!messages?.length || !messages[0]?.media) {
@@ -140,12 +144,8 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
         let fileSize: number | undefined;
 
         if (media.document) {
-            const attrs = media.document.attributes || [];
-            for (const attr of attrs) {
-                if (attr.className === 'DocumentAttributeFilename') {
-                    fileName = attr.fileName;
-                    break;
-                }
+            for (const attr of media.document.attributes || []) {
+                if (attr.className === 'DocumentAttributeFilename') { fileName = attr.fileName; break; }
             }
             mimeType = media.document.mimeType || mimeType;
             fileSize = media.document.size ? Number(media.document.size) : undefined;
@@ -160,11 +160,8 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
             return res.status(400).json({ error: 'Unsupported media or missing size' });
         }
 
-        // --- HTTP Range Streaming Logic ---
-        // If the client sends a Range header (video/audio players, resumable
-        // downloads) we honour it and reply 206. If it doesn't (browser <img>,
-        // PDF viewer, plain download) we send the WHOLE file with 200. We never
-        // truncate: a former 1 MB cap corrupted every file over 1 MB.
+        // HTTP Range: honour player/resumable Range with 206; otherwise send the
+        // whole file with 200. We never truncate.
         const rangeHeader = req.headers.range as string | undefined;
         const hasRange = !!rangeHeader;
         const match = rangeHeader?.match(/bytes=(\d+)-(\d*)/);
@@ -172,8 +169,7 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
         const serveEnd = (match && match[2]) ? parseInt(match[2], 10) : fileSize - 1;
         const contentLength = serveEnd - start + 1;
 
-        // MTProto reads must start on a 4 KB boundary, so we align the offset
-        // down and discard the leading `skipBytes` from the first chunk.
+        // MTProto reads must start on a 4 KB boundary.
         const alignedStart = start - (start % 4096);
         const skipBytes = start - alignedStart;
 
@@ -192,44 +188,38 @@ async function handleBYOD(req: VercelRequest, res: VercelResponse, messageId: nu
         for await (const chunk of client.iterDownload({
             file: mediaToDownload,
             offset: bigInt(alignedStart),
-            requestSize: 1048576, // 1 MB request granularity (multiple of 4 KB)
+            requestSize: 1048576, // 1 MB (multiple of 4 KB)
         })) {
             let dataChunk = Buffer.from(chunk);
 
-            // Drop the alignment padding at the very start of the requested range.
-            if (isFirstChunk && skipBytes > 0) {
-                dataChunk = dataChunk.subarray(skipBytes);
-            }
+            if (isFirstChunk && skipBytes > 0) dataChunk = dataChunk.subarray(skipBytes);
             isFirstChunk = false;
 
-            // Never overshoot the requested byte count.
             const remaining = contentLength - bytesSent;
-            if (dataChunk.length > remaining) {
-                dataChunk = dataChunk.subarray(0, remaining);
+            if (dataChunk.length > remaining) dataChunk = dataChunk.subarray(0, remaining);
+
+            if (!res.write(dataChunk)) {
+                // Respect backpressure so we don't balloon memory on slow clients.
+                await new Promise<void>((resolve) => res.once('drain', resolve));
             }
-
-            res.write(dataChunk);
             bytesSent += dataChunk.length;
-
             if (bytesSent >= contentLength) break;
         }
-    } catch (err) {
+    } catch (err: any) {
         console.error('[Stream] BYOD error:', err);
-        if (!res.headersSent) res.status(500).json({ error: 'Streaming failed' });
+        if (!res.headersSent) res.status(500).json({ error: `BYOD stream failed: ${err?.message || err}` });
     } finally {
         await client.disconnect().catch(() => {});
         if (!res.writableEnded) res.end();
     }
 }
 
-// ─── Helper: pipe a Telegram file URL to the response ───
+// ─── Helper: pipe a Telegram file URL to the response (managed path) ───
 //
-// Telegram's file endpoint serves files like a static asset and honours HTTP
-// Range requests. We forward the client's Range (if any) to Telegram, mirror
-// the upstream status (200 full / 206 partial) and its Range/length headers,
-// then stream the body chunk-by-chunk. Streaming (not buffering with
-// arrayBuffer) keeps memory flat and avoids Vercel's response-body size cap, so
-// files of any size download intact — the fix for the old 1 MB truncation bug.
+// Telegram's file endpoint honours HTTP Range. We forward the client's Range,
+// mirror the upstream status (200/206) and its Range/length headers, then
+// stream the body with `pipeline`, which handles backpressure and cleanup and
+// ends the response — no manual reader loop, no size cap, no buffering.
 async function pipeUrl(
     req: VercelRequest,
     res: VercelResponse,
@@ -244,8 +234,6 @@ async function pipeUrl(
         return res.status(502).json({ error: `Upstream ${upstream.status}` });
     }
 
-    // Prefer our extension-based guess (drives playback); fall back to whatever
-    // Telegram reported only when we couldn't confidently identify the type.
     const upstreamType = upstream.headers.get('content-type');
     const resolvedType = contentType !== 'application/octet-stream'
         ? contentType
@@ -257,7 +245,6 @@ async function pipeUrl(
         'Cache-Control': 'public, max-age=3600',
         'Content-Disposition': 'inline',
     };
-    // Mirror upstream Range/length so the browser knows exactly what it's getting.
     const contentRange = upstream.headers.get('content-range');
     if (contentRange) headers['Content-Range'] = contentRange;
     const contentLength = upstream.headers.get('content-length');
@@ -266,17 +253,9 @@ async function pipeUrl(
 
     res.writeHead(upstream.status, headers);
 
-    const body = upstream.body as any;
-    if (!body) return res.end();
+    if (!upstream.body) return res.end();
 
-    const reader = body.getReader();
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(Buffer.from(value));
-        }
-    } finally {
-        res.end();
-    }
+    // Web ReadableStream -> Node Readable -> response, with backpressure handled.
+    const nodeStream = Readable.fromWeb(upstream.body as any);
+    await pipeline(nodeStream, res);
 }

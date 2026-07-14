@@ -96,17 +96,27 @@ export default function SharedFilePage() {
         fetchFile();
     }, [id]);
 
-    // Build the managed stream URL for previewable types. BYOD and oversized
-    // managed files are handled inline in the preview area (no URL set).
+    // Build the stream URL for previewable types. Managed files stream by
+    // fileId; BYOD files stream via the encrypted token minted at share time
+    // (the public page has no owner session, so the token carries everything
+    // the stream endpoint needs).
     const loadPreviewUrl = (fileData: FileItem) => {
         if (!fileData.telegramFileId) return;
-        if (fileData.storageType === 'byod') return;
-        if ((fileData.size ?? 0) > MANAGED_LIMIT) return;
 
         const previewable: PreviewType[] = ['image', 'video', 'audio', 'pdf'];
         const type = getPreviewType(fileData.name, fileData.mimeType);
         if (!previewable.includes(type)) return;
 
+        if (fileData.storageType === 'byod') {
+            const token = fileData.shareSettings?.streamToken;
+            if (!token) return; // no token -> fallback card
+            setMediaState('loading');
+            setPreviewUrl(`/api/telegram/stream?token=${encodeURIComponent(token)}`);
+            return;
+        }
+
+        // Managed: Bot API can only serve files <= 20MB.
+        if ((fileData.size ?? 0) > MANAGED_LIMIT) return;
         setMediaState('loading');
         setPreviewUrl(`/api/telegram/stream?fileId=${encodeURIComponent(fileData.telegramFileId)}`);
     };
@@ -114,19 +124,26 @@ export default function SharedFilePage() {
     const handleDownload = () => {
         if (!file?.telegramFileId) return;
 
+        let url: string;
         if (file.storageType === 'byod') {
-            toast.error('This file lives on the owner’s Telegram and can’t be downloaded from a public link.');
-            return;
-        }
-        if ((file.size ?? 0) > MANAGED_LIMIT) {
-            toast.error('Files larger than 20MB can’t be served through the managed bot.');
-            return;
+            const token = file.shareSettings?.streamToken;
+            if (!token) {
+                toast.error('The owner shared this before preview links were supported. Ask them to re-share it.');
+                return;
+            }
+            url = `/api/telegram/stream?token=${encodeURIComponent(token)}`;
+        } else {
+            if ((file.size ?? 0) > MANAGED_LIMIT) {
+                toast.error('Files larger than 20MB can’t be served through the managed bot.');
+                return;
+            }
+            url = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
         }
 
         setDownloading(true);
         try {
             const link = document.createElement('a');
-            link.href = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
+            link.href = url;
             link.download = file.name;
             link.target = '_blank';
             document.body.appendChild(link);
@@ -221,8 +238,10 @@ export default function SharedFilePage() {
     const previewType: PreviewType = file ? getPreviewType(file.name, file.mimeType) : 'unknown';
     const TypeIcon = TYPE_META[previewType].icon;
     const isByod = file?.storageType === 'byod';
+    const hasByodToken = isByod && !!file?.shareSettings?.streamToken;
     const tooLarge = !isByod && (file?.size ?? 0) > MANAGED_LIMIT;
-    const downloadAvailable = !!file?.telegramFileId && !isByod && !tooLarge;
+    // BYOD is downloadable only when the owner shared it WITH a stream token.
+    const downloadAvailable = !!file?.telegramFileId && !tooLarge && (!isByod || hasByodToken);
 
     // A tasteful, self-explaining fallback card used whenever inline preview
     // isn't possible (unsupported type, BYOD, oversized, or a media error).
@@ -253,12 +272,14 @@ export default function SharedFilePage() {
     const renderPreview = () => {
         if (!file) return null;
 
-        if (isByod) {
+        // BYOD is viewable ONLY when the owner shared it with a stream token.
+        // Without one (legacy shares), fall back to the owner-only notice.
+        if (isByod && !hasByodToken) {
             return (
                 <FallbackCard
                     icon={CloudOff}
-                    title="Preview requires the file owner"
-                    subtitle="This file is stored on the owner’s own Telegram account and can only be opened by them."
+                    title="Preview not available"
+                    subtitle="The owner shared this before preview links were supported. Ask them to re-share it to enable preview and download."
                 />
             );
         }

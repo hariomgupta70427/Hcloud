@@ -2,35 +2,83 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 
 /**
- * Exchange a Telegram session string for a short-lived stream token.
- * This avoids putting the full session string in URL query parameters,
- * which would leak into server logs, browser history, and Referer headers.
+ * Stateless, self-contained stream tokens.
+ *
+ * A token is an AES-256-GCM encrypted, base64url-encoded blob of
+ * `{ session, messageId, exp }`. Because everything the stream endpoint needs
+ * lives *inside* the token, ANY serverless instance can validate it — the old
+ * in-memory Map only worked when the mint and the stream request happened to
+ * land on the same Vercel instance, which is why BYOD streaming failed
+ * intermittently.
+ *
+ * Encryption (not just signing) is essential: the token travels in URLs and,
+ * for shared files, is stored in Firestore — so the raw Telegram session must
+ * never be readable from it.
  *
  * POST /api/telegram/session-token
- * Body: { session: string, messageId: number }
- * Returns: { token: string } (valid for 10 minutes)
+ * Body: { session: string, messageId: number, ttlSeconds?: number }
+ * Returns: { token: string }
  */
 
-// In-memory token store (per Vercel instance).
-// Each token maps to { session, messageId, expiresAt }.
-const tokenStore = new Map<string, { session: string; messageId: number; expiresAt: number }>();
+// Key material: prefer an explicit secret, else derive from the server-only
+// TELEGRAM_API_HASH (always present wherever streaming runs). Never a client value.
+const SECRET = process.env.STREAM_TOKEN_SECRET || process.env.TELEGRAM_API_HASH || '';
+const KEY = crypto.createHash('sha256').update(SECRET).digest(); // 32 bytes for AES-256
 
-// Clean expired tokens every 5 minutes
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, val] of tokenStore.entries()) {
-        if (val.expiresAt < now) tokenStore.delete(key);
-    }
-}, 5 * 60 * 1000);
+const DEFAULT_TTL = 10 * 60;          // 10 minutes (dashboard playback)
+const MAX_TTL = 7 * 24 * 60 * 60;      // 7 days (shared links)
 
+interface TokenPayload { session: string; messageId: number; exp: number }
+
+/** Encrypt a payload into an opaque, URL-safe token. */
+export function createStreamToken(session: string, messageId: number, ttlSeconds = DEFAULT_TTL): string {
+    if (!SECRET) throw new Error('Stream token secret not configured');
+    const ttl = Math.min(Math.max(1, ttlSeconds), MAX_TTL);
+    const payload: TokenPayload = {
+        session,
+        messageId,
+        // NOTE: Date.now() is fine here — this file only runs server-side on Vercel.
+        exp: Math.floor(Date.now() / 1000) + ttl,
+    };
+
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', KEY, iv);
+    const encrypted = Buffer.concat([
+        cipher.update(JSON.stringify(payload), 'utf8'),
+        cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+
+    // iv(12) | tag(16) | ciphertext  -> base64url
+    return Buffer.concat([iv, tag, encrypted]).toString('base64url');
+}
+
+/** Decrypt and validate a token. Returns null if invalid, tampered, or expired. */
 export function getSessionFromToken(token: string): { session: string; messageId: number } | null {
-    const entry = tokenStore.get(token);
-    if (!entry) return null;
-    if (entry.expiresAt < Date.now()) {
-        tokenStore.delete(token);
+    if (!SECRET || !token) return null;
+    try {
+        const raw = Buffer.from(token, 'base64url');
+        if (raw.length < 28) return null; // 12 iv + 16 tag minimum
+        const iv = raw.subarray(0, 12);
+        const tag = raw.subarray(12, 28);
+        const ciphertext = raw.subarray(28);
+
+        const decipher = crypto.createDecipheriv('aes-256-gcm', KEY, iv);
+        decipher.setAuthTag(tag);
+        const decrypted = Buffer.concat([
+            decipher.update(ciphertext),
+            decipher.final(),
+        ]).toString('utf8');
+
+        const payload = JSON.parse(decrypted) as TokenPayload;
+        if (!payload.session || !payload.messageId) return null;
+        if (payload.exp && payload.exp * 1000 < Date.now()) return null;
+
+        return { session: payload.session, messageId: payload.messageId };
+    } catch {
+        // Bad key, tampered ciphertext, or malformed token all land here.
         return null;
     }
-    return { session: entry.session, messageId: entry.messageId };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -41,26 +89,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
+    if (!SECRET) {
+        return res.status(500).json({ error: 'Stream token secret not configured on server' });
+    }
+
     try {
-        const { session, messageId } = req.body;
+        const { session, messageId, ttlSeconds } = req.body;
 
         if (!session || !messageId) {
             return res.status(400).json({ error: 'session and messageId are required' });
         }
 
-        // Generate a random token
-        const token = crypto.randomBytes(32).toString('hex');
-
-        // Store with 10-minute TTL
-        tokenStore.set(token, {
-            session,
-            messageId: parseInt(messageId),
-            expiresAt: Date.now() + 10 * 60 * 1000,
-        });
-
+        const token = createStreamToken(session, parseInt(messageId), ttlSeconds);
         return res.status(200).json({ token });
     } catch (error: any) {
         console.error('[session-token] Error:', error);
-        return res.status(500).json({ error: 'Failed to create token' });
+        return res.status(500).json({ error: error.message || 'Failed to create token' });
     }
 }
