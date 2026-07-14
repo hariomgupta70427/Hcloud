@@ -47,3 +47,5 @@ firebase.json
 firestore.indexes.json
 firebase.json
 firebase.json
+
+.vercel

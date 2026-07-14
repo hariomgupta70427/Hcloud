@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { FileItem } from '@/services/fileService';
 import { useAuthStore } from '@/stores/authStore';
 import { getFileFromTelegram, getManagedStreamUrl } from '@/services/telegramService';
-import { downloadBYODFile } from '@/services/chunkedUploadService';
+import { downloadFileClientSide } from '@/services/telegramClientUpload';
 import { getPreviewType, PreviewFile } from '@/components/preview/PreviewModal';
 
 /**
@@ -62,7 +62,7 @@ export function useFileActions(options?: { onOpenFolder?: (file: FileItem) => vo
             let downloadUrl: string | undefined;
 
             if (isByod) {
-                const result = await downloadBYODFile(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
+                const result = await downloadFileClientSide(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
                 if (result.success && result.blobUrl) {
                     downloadUrl = result.blobUrl;
                 } else {
@@ -118,7 +118,7 @@ export function useFileActions(options?: { onOpenFolder?: (file: FileItem) => vo
         const toastId = toast.loading(`Preparing download: ${file.name}`);
         try {
             if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-                const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
+                const result = await downloadFileClientSide(file.telegramMessageId, user.byodConfig.telegramSession);
                 if (result.success && result.blobUrl) {
                     const link = document.createElement('a');
                     link.href = result.blobUrl;

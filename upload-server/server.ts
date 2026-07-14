@@ -9,6 +9,7 @@ import cors from 'cors';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { TelegramClient, sessions, Api } from 'telegram';
 const { StringSession } = sessions;
 
@@ -19,6 +20,43 @@ const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || '';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
+
+// ============================================
+// STREAM TOKEN DECRYPTION
+// Decrypts the opaque AES-256-GCM token minted by the Vercel
+// /api/telegram/session-token endpoint. MUST use the exact same key
+// derivation and layout as api/telegram/session-token.ts:
+//   key = sha256(STREAM_TOKEN_SECRET || TELEGRAM_API_HASH)
+//   token = base64url( iv(12) | tag(16) | ciphertext )  where ciphertext
+//           is AES-256-GCM of JSON { session, messageId, exp }.
+// Because the token carries everything needed, this route needs NO Firebase
+// auth — possession of the (encrypted, signed) token IS the capability.
+// ============================================
+const STREAM_TOKEN_SECRET = process.env.STREAM_TOKEN_SECRET || TELEGRAM_API_HASH || '';
+const STREAM_TOKEN_KEY = crypto.createHash('sha256').update(STREAM_TOKEN_SECRET).digest();
+
+function decryptStreamToken(token: string): { session: string; messageId: number } | null {
+    if (!STREAM_TOKEN_SECRET || !token) return null;
+    try {
+        const raw = Buffer.from(token, 'base64url');
+        if (raw.length < 28) return null; // 12 iv + 16 tag minimum
+        const iv = raw.subarray(0, 12);
+        const tag = raw.subarray(12, 28);
+        const ciphertext = raw.subarray(28);
+
+        const decipher = crypto.createDecipheriv('aes-256-gcm', STREAM_TOKEN_KEY, iv);
+        decipher.setAuthTag(tag);
+        const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+
+        const payload = JSON.parse(decrypted) as { session: string; messageId: number; exp: number };
+        if (!payload.session || !payload.messageId) return null;
+        if (payload.exp && payload.exp * 1000 < Date.now()) return null;
+
+        return { session: payload.session, messageId: payload.messageId };
+    } catch {
+        return null; // bad key, tampered ciphertext, or malformed token
+    }
+}
 
 // Validate required env vars
 if (!TELEGRAM_API_ID || !TELEGRAM_API_HASH) {
@@ -543,6 +581,89 @@ app.post('/download', authMiddleware, async (req: Request, res: Response) => {
 // Browser can use this directly as <audio src> or <video src>
 // ============================================
 
+// Shared streaming core: downloads (with brief cache) and writes the media to
+// the response, honouring HTTP Range for seeking. Used by both the authed
+// /stream route (dashboard) and the public /token-stream route (shared links).
+async function streamMedia(req: Request, res: Response, messageId: number, session: string) {
+    console.log(`🎵 Stream request for message ${messageId}`);
+    const client = await getOrCreateClient(session);
+
+    const messages = await client.getMessages('me', { ids: [messageId] });
+    if (!messages || messages.length === 0 || !messages[0]) {
+        return res.status(404).json({ error: 'Message not found' });
+    }
+
+    const message = messages[0];
+    if (!message.media) {
+        return res.status(404).json({ error: 'No media in message' });
+    }
+
+    // Get file metadata
+    let contentType = 'application/octet-stream';
+    let streamFileName = 'file';
+    const media = message.media as any;
+    if (media.document) {
+        contentType = media.document.mimeType || contentType;
+        for (const attr of media.document.attributes || []) {
+            if (attr.fileName) streamFileName = attr.fileName;
+        }
+    }
+
+    console.log(`🎵 Streaming: ${streamFileName} (${contentType})`);
+
+    // Brief in-memory cache so seeking (repeated Range requests) doesn't re-download.
+    const cacheKey = `${session.substring(0, 20)}_${messageId}`;
+    let buffer: Buffer;
+    const cached = streamCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+        buffer = cached.buffer;
+        console.log(`🎵 Using cached buffer for ${streamFileName}`);
+    } else {
+        const downloaded = await client.downloadMedia(message, {}) as Buffer;
+        if (!downloaded) {
+            return res.status(404).json({ error: 'Failed to download file' });
+        }
+        buffer = downloaded;
+        if (streamCache.size > 10) {
+            const oldest = streamCache.keys().next().value;
+            if (oldest) streamCache.delete(oldest);
+        }
+        streamCache.set(cacheKey, { buffer, timestamp: Date.now() });
+    }
+
+    const totalSize = buffer.length;
+
+    // Handle Range requests for seeking in audio/video
+    const rangeHeader = req.headers.range;
+    if (rangeHeader) {
+        const parts = rangeHeader.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        const chunkSize = end - start + 1;
+
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+        res.setHeader('Content-Length', chunkSize.toString());
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
+        return res.send(buffer.subarray(start, end + 1));
+    }
+
+    // No Range header — send full file
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', totalSize.toString());
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(streamFileName)}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+    return res.send(buffer);
+}
+
+// Authed stream (dashboard playback) — requires a Firebase ID token.
 app.get('/stream', authMiddleware, async (req: Request, res: Response) => {
     const messageId = parseInt(req.query.messageId as string);
     const session = req.query.session as string;
@@ -552,96 +673,31 @@ app.get('/stream', authMiddleware, async (req: Request, res: Response) => {
     }
 
     try {
-        console.log(`🎵 Stream request for message ${messageId}`);
-        const client = await getOrCreateClient(session);
-
-        // Get the message from Saved Messages
-        const messages = await client.getMessages('me', { ids: [messageId] });
-
-        if (!messages || messages.length === 0 || !messages[0]) {
-            return res.status(404).json({ error: 'Message not found' });
-        }
-
-        const message = messages[0];
-        if (!message.media) {
-            return res.status(404).json({ error: 'No media in message' });
-        }
-
-        // Get file metadata
-        let contentType = 'application/octet-stream';
-        let streamFileName = 'file';
-        let fileSize = 0;
-        const media = message.media as any;
-        if (media.document) {
-            contentType = media.document.mimeType || contentType;
-            fileSize = media.document.size?.toJSNumber?.() || Number(media.document.size) || 0;
-            for (const attr of media.document.attributes || []) {
-                if (attr.fileName) {
-                    streamFileName = attr.fileName;
-                }
-            }
-        }
-
-        // Download and stream - GramJS downloads the full file
-        // We cache it in memory briefly to handle Range requests (seeking)
-        console.log(`🎵 Streaming: ${streamFileName} (${contentType})`);
-
-        // Simple in-memory cache for stream responses (avoids re-downloading on seek)
-        const cacheKey = `${session.substring(0, 20)}_${messageId}`;
-        let buffer: Buffer;
-        const cached = streamCache.get(cacheKey);
-        if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
-            buffer = cached.buffer;
-            console.log(`🎵 Using cached buffer for ${streamFileName}`);
-        } else {
-            const downloaded = await client.downloadMedia(message, {}) as Buffer;
-            if (!downloaded) {
-                return res.status(404).json({ error: 'Failed to download file' });
-            }
-            buffer = downloaded;
-            // Cache for 5 minutes, limit cache size
-            if (streamCache.size > 10) {
-                const oldest = streamCache.keys().next().value;
-                if (oldest) streamCache.delete(oldest);
-            }
-            streamCache.set(cacheKey, { buffer, timestamp: Date.now() });
-        }
-
-        const totalSize = buffer.length;
-
-        // Handle Range requests for seeking in audio/video
-        const rangeHeader = req.headers.range;
-        if (rangeHeader) {
-            const parts = rangeHeader.replace(/bytes=/, '').split('-');
-            const start = parseInt(parts[0], 10);
-            const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
-            const chunkSize = end - start + 1;
-
-            res.status(206);
-            res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
-            res.setHeader('Content-Length', chunkSize.toString());
-            res.setHeader('Content-Type', contentType);
-            res.setHeader('Accept-Ranges', 'bytes');
-            res.setHeader('Cache-Control', 'private, max-age=3600');
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
-            return res.send(buffer.subarray(start, end + 1));
-        }
-
-        // No Range header — send full file
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Length', totalSize.toString());
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(streamFileName)}"`);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
-
-        return res.send(buffer);
-
+        return await streamMedia(req, res, messageId, session);
     } catch (error: any) {
         console.error('❌ Stream error:', error);
-        return res.status(500).json({ error: error.message || 'Stream failed' });
+        if (!res.headersSent) return res.status(500).json({ error: error.message || 'Stream failed' });
+    }
+});
+
+// Public token stream (shared links + dashboard media, proxied from Vercel).
+// The encrypted token IS the capability — it carries session+messageId and is
+// minted server-side on Vercel, so NO Firebase auth is required here. This is
+// how a public /s/<id> page can play a BYOD file without the owner's session.
+app.get('/token-stream', async (req: Request, res: Response) => {
+    const token = req.query.token as string;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+
+    const decoded = decryptStreamToken(token);
+    if (!decoded) {
+        return res.status(401).json({ error: 'Invalid or expired stream token' });
+    }
+
+    try {
+        return await streamMedia(req, res, decoded.messageId, decoded.session);
+    } catch (error: any) {
+        console.error('❌ Token-stream error:', error);
+        if (!res.headersSent) return res.status(500).json({ error: error.message || 'Stream failed' });
     }
 });
 
