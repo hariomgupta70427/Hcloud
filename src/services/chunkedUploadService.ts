@@ -37,11 +37,44 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 /**
- * Get a streaming URL for BYOD audio/video files.
- * This URL can be used directly as <audio src> or <video src> for instant playback.
+ * Legacy streaming URL that embeds the raw session in the query string.
+ * Kept for reference but NOT used — the session can leak into server access
+ * logs and browser history. Prefer getByodStreamUrl() below.
  */
 export function getBYODStreamUrl(messageId: number, session: string): string {
     return `${API_STREAM}?messageId=${messageId}&session=${encodeURIComponent(session)}`;
+}
+
+/**
+ * Get a SECURE streaming URL for a BYOD file, usable directly as the `src`
+ * of <audio>/<video>/<img> or an <iframe> for any content type.
+ *
+ * How it works:
+ *   1. Ask the Vercel /api/telegram/session-token endpoint to mint a short-lived,
+ *      AES-256-GCM encrypted token that wraps { session, messageId, exp }.
+ *   2. Point the media element at Render's PUBLIC /token-stream?token= route,
+ *      which decrypts the token and streams the bytes from Telegram with full
+ *      HTTP Range support (so seeking in audio/video works).
+ *
+ * The raw Telegram session never appears in the URL, logs, or history — only
+ * the opaque, expiring token does. The bytes flow browser <- Render directly
+ * (no Vercel proxy hop), so playback is as fast as the server allows.
+ */
+export async function getByodStreamUrl(messageId: number, session: string): Promise<string | null> {
+    try {
+        const res = await fetch('/api/telegram/session-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session, messageId }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data.token) return null;
+        return `${UPLOAD_SERVER_URL}/token-stream?token=${encodeURIComponent(data.token)}`;
+    } catch (err) {
+        console.error('[getByodStreamUrl] Failed to mint stream token:', err);
+        return null;
+    }
 }
 
 export interface ChunkedUploadResult {

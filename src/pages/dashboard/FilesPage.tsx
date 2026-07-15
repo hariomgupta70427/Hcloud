@@ -19,7 +19,7 @@ import { PreviewModal, getPreviewType, PreviewFile } from '@/components/preview/
 import { FileItem } from '@/services/fileService';
 import * as fileService from '@/services/fileService';
 import { getFileFromTelegram, getManagedStreamUrl } from '@/services/telegramService';
-import { downloadFileClientSide } from '@/services/telegramClientUpload';
+import { downloadBYODFile, getByodStreamUrl } from '@/services/chunkedUploadService';
 import { useUpload } from '@/hooks/useUpload';
 import { toast } from 'sonner';
 
@@ -209,7 +209,7 @@ export default function FilesPage() {
     try {
       // BYOD files: download via Render server
       if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-        const result = await downloadFileClientSide(file.telegramMessageId, user.byodConfig.telegramSession);
+        const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
         if (result.success && result.blobUrl) {
           const link = document.createElement('a');
           link.href = result.blobUrl;
@@ -290,24 +290,40 @@ export default function FilesPage() {
       }
 
       const previewType = getPreviewType(file.name, file.mimeType);
+      const isByod = file.storageType === 'byod' && !!file.telegramMessageId && !!user?.byodConfig?.telegramSession;
 
-      // ── MANAGED streamed types: audio / video (native player) and office
-      //    (Google Docs Viewer needs a PUBLIC ABSOLUTE URL) stream via the
-      //    Vercel Bot-API proxy. BYOD files are NOT streamed here — they take
-      //    the client-side blob path below (browser -> Telegram, no server). ──
-      const isByodMedia = file.storageType === 'byod' && !!file.telegramMessageId && !!user?.byodConfig?.telegramSession;
-      if (!isByodMedia && (previewType === 'audio' || previewType === 'video' || previewType === 'office')) {
+      // ── Stream every previewable type directly (no full-file pre-download) ──
+      //   • Managed → Vercel Bot-API proxy (same-origin, honours Range).
+      //   • BYOD    → Render /token-stream via a short-lived encrypted token
+      //     (session never appears in the URL). True streaming: the media
+      //     element fetches bytes on demand and can seek.
+      const streamable = previewType === 'audio' || previewType === 'video'
+        || previewType === 'image' || previewType === 'pdf' || previewType === 'office';
+
+      if (streamable) {
+        let streamUrl: string | undefined;
+        if (isByod) {
+          setIsLoadingPreview(true);
+          streamUrl = await getByodStreamUrl(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
+          setIsLoadingPreview(false);
+          if (!streamUrl) {
+            toast.error('Failed to prepare stream');
+            return;
+          }
+        } else {
+          streamUrl = `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`;
+        }
         setPreviewFile({
           id: file.id,
           name: file.name,
-          url: `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`,
+          url: streamUrl,
           type: previewType,
           mimeType: file.mimeType,
         });
         return;
       }
 
-      // ── Non-media files: download blob first ──
+      // ── Non-streamable (code / unknown): fetch the bytes, then render ──
       setIsLoadingPreview(true);
       toast.loading('Loading file...', { id: 'file-loading' });
 
@@ -315,8 +331,8 @@ export default function FilesPage() {
         let downloadUrl: string | undefined;
 
         // BYOD files: download via Render server
-        if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-          const result = await downloadFileClientSide(file.telegramMessageId, user.byodConfig.telegramSession);
+        if (isByod) {
+          const result = await downloadBYODFile(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
           if (result.success && result.blobUrl) {
             downloadUrl = result.blobUrl;
           }
@@ -403,7 +419,7 @@ export default function FilesPage() {
           // BYOD: download via Render server
           toast.info('Starting download...');
           try {
-            const result = await downloadFileClientSide(file.telegramMessageId, user.byodConfig.telegramSession);
+            const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
             if (result.success && result.blobUrl) {
               const link = document.createElement('a');
               link.href = result.blobUrl;

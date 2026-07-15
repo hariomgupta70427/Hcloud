@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { smartUploadToTelegram, MAX_FILE_SIZE, TelegramUploadResult } from '@/services/telegramService';
-import { uploadFileClientSide } from '@/services/telegramClientUpload';
+import { uploadFileChunked } from '@/services/chunkedUploadService';
 import { addFileRecord } from '@/services/fileService';
 import { useAuthStore } from '@/stores/authStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -59,17 +59,18 @@ export function useUpload(): UseUploadReturn {
 
         updateFile(index, { status: 'uploading', progress: 0 });
 
-        // BYOD users: upload DIRECTLY from the browser to Telegram (MTProto).
-        // No server hop — browser -> Telegram in one leg, so it's as fast as the
-        // user's own connection and there's no Render cold-start penalty.
+        // BYOD users: upload via the Render server (browser -> Render -> Telegram).
+        // A datacenter server is required because many networks (ISPs) block
+        // direct browser->Telegram MTProto connections. Render keeps a warm,
+        // pooled Telegram client so this is fast once the server is awake.
         if (isBYOD && user?.byodConfig?.telegramSession) {
-            console.log(`[useUpload] BYOD client-side upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+            console.log(`[useUpload] BYOD upload via Render: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
             try {
-                const result = await uploadFileClientSide(
+                const result = await uploadFileChunked(
                     file,
                     user.byodConfig.telegramSession,
-                    (percent) => {
-                        updateFile(index, { progress: percent });
+                    (progress) => {
+                        updateFile(index, { progress: progress.percent });
                     }
                 );
 
