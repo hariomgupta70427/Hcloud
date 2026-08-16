@@ -15,6 +15,7 @@ import {
     writeBatch
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { getIdTokenHeader } from '@/lib/authHeader';
 
 export interface FileItem {
     id: string;
@@ -32,10 +33,17 @@ export interface FileItem {
     isDeleted?: boolean;
     deletedAt?: Date;
     shareSettings?: {
+        /** Legacy unsalted SHA-256 hash. Only read for shares created before PBKDF2. */
         password?: string;
+        /** Random per-share salt (hex) for the PBKDF2 verifier. */
+        passwordSalt?: string;
+        /** PBKDF2-SHA256 verifier (hex) of the share password. */
+        passwordVerifier?: string;
         expiresAt?: Date;
         link?: string;
         streamToken?: string; // BYOD: opaque encrypted stream token for the public page
+        /** When streamToken stops working (capped at 7 days by the minting API). */
+        tokenExpiresAt?: Date;
     };
     path: string;
     thumbnail?: string;
@@ -268,16 +276,14 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         updatedAt: serverTimestamp(),
     };
 
-    // Store messageId for BYOD files (needed for download)
-    if (data.telegramMessageId) {
+    // Store messageId for BYOD files (needed for streaming/download).
+    // Test for null/undefined explicitly: a truthiness check silently dropped a
+    // messageId of 0, leaving a BYOD file that could never be retrieved.
+    if (data.telegramMessageId !== undefined && data.telegramMessageId !== null) {
         fileData.telegramMessageId = data.telegramMessageId;
     }
 
-    if (data.thumbnail) {
-        fileData.thumbnail = data.thumbnail;
-    }
-
-    // Only add thumbnail if it exists (Firestore doesn't allow undefined)
+    // Firestore rejects explicit `undefined`, so only set this when present.
     if (data.thumbnail) {
         fileData.thumbnail = data.thumbnail;
     }
@@ -366,11 +372,42 @@ export async function toggleStar(id: string): Promise<boolean> {
     return newStarred;
 }
 
-// Hash a password string with SHA-256 (browser-native)
-async function hashPassword(password: string): Promise<string> {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+// ── Share password hashing ───────────────────────────────────────────────────
+//
+// Passwords are verified with PBKDF2-SHA256 over a random per-share salt.
+//
+// The previous scheme stored a bare, UNSALTED SHA-256 of the password. SHA-256
+// is designed to be fast, so an unsalted digest of a human-chosen password falls
+// to a rainbow table or a trivial offline brute force. Because share documents
+// are readable by anyone holding the link (see the SECURITY note on shareFile),
+// that meant a leaked link also leaked a recoverable password — which users
+// commonly reuse elsewhere. 210k PBKDF2 iterations makes that attack expensive.
+const PBKDF2_ITERATIONS = 210_000;
+
+function toHex(buffer: ArrayBuffer): string {
+    return Array.from(new Uint8Array(buffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+/** Derive the stored verifier for a password + salt. */
+export async function derivePasswordVerifier(password: string, saltHex: string): Promise<string> {
+    const salt = Uint8Array.from(
+        saltHex.match(/.{2}/g)!.map((byte) => parseInt(byte, 16))
+    );
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(password),
+        'PBKDF2',
+        false,
+        ['deriveBits']
+    );
+    const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+        keyMaterial,
+        256
+    );
+    return toHex(bits);
 }
 
 // Share file
@@ -385,40 +422,61 @@ export async function shareFile(
 ): Promise<string> {
     const publicShareLink = `${window.location.origin}/s/${id}`;
 
-    // Hash password before storing (never store plain text)
-    let hashedPassword: string | null = null;
+    // Hash the password with a fresh random salt (never store plain text).
+    let passwordSalt: string | null = null;
+    let passwordVerifier: string | null = null;
     if (settings.password) {
-        hashedPassword = await hashPassword(settings.password);
+        passwordSalt = toHex(crypto.getRandomValues(new Uint8Array(16)).buffer);
+        passwordVerifier = await derivePasswordVerifier(settings.password, passwordSalt);
     }
 
     // Mint the BYOD stream token if this is a BYOD file.
     let streamToken: string | null = null;
+    let tokenExpiresAt: Date | null = null;
     if (byod?.session && byod?.messageId) {
-        try {
-            // Token lifetime tracks the share's expiry (capped server-side at 7 days),
-            // else defaults to the 7-day maximum.
-            const ttlSeconds = settings.expiresAt
-                ? Math.max(60, Math.floor((settings.expiresAt.getTime() - Date.now()) / 1000))
-                : 7 * 24 * 60 * 60;
-            const res = await fetch('/api/telegram/session-token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session: byod.session, messageId: byod.messageId, ttlSeconds }),
-            });
-            const data = await res.json();
-            if (data.token) streamToken = data.token;
-        } catch (err) {
-            console.warn('Failed to mint BYOD stream token for share:', err);
+        // The token TTL is capped server-side at 7 days (MAX_TTL in
+        // api/telegram/session-token.ts). A share with a longer or no expiry
+        // therefore stops working after 7 days while still looking active, so
+        // record when the token actually dies and let the UI say so.
+        const MAX_TOKEN_TTL = 7 * 24 * 60 * 60;
+        const requestedTtl = settings.expiresAt
+            ? Math.max(60, Math.floor((settings.expiresAt.getTime() - Date.now()) / 1000))
+            : MAX_TOKEN_TTL;
+        const ttlSeconds = Math.min(requestedTtl, MAX_TOKEN_TTL);
+
+        const res = await fetch('/api/telegram/session-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(await getIdTokenHeader()) },
+            body: JSON.stringify({ session: byod.session, messageId: byod.messageId, ttlSeconds }),
+        });
+        if (!res.ok) {
+            // Do NOT hand back a link that cannot serve the file. Silently
+            // storing a null token produced share links that showed a broken
+            // preview with no explanation.
+            throw new Error(
+                'Could not prepare this file for sharing. Please check your Telegram connection and try again.'
+            );
         }
+        const data = await res.json();
+        if (!data?.token) {
+            throw new Error('Could not prepare this file for sharing. Please try again.');
+        }
+        streamToken = data.token;
+        tokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
     }
 
     await updateDoc(doc(db, 'files', id), {
         isShared: true,
         shareSettings: {
-            password: hashedPassword,
+            // Salted PBKDF2 verifier. `password` is kept as an explicit null so
+            // any legacy unsalted SHA-256 value is overwritten on re-share.
+            password: null,
+            passwordSalt,
+            passwordVerifier,
             link: publicShareLink,
             expiresAt: settings.expiresAt ? Timestamp.fromDate(settings.expiresAt) : null,
             streamToken,
+            tokenExpiresAt: tokenExpiresAt ? Timestamp.fromDate(tokenExpiresAt) : null,
         },
         updatedAt: serverTimestamp(),
     });

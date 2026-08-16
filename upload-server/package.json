@@ -9,6 +9,7 @@
         "dev": "ts-node server.ts"
     },
     "dependencies": {
+        "big-integer": "^1.6.52",
         "cors": "^2.8.5",
         "express": "^4.18.2",
         "telegram": "^2.26.22"

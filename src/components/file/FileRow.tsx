@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { FileItem } from '@/services/fileService';
 import { cn } from '@/lib/utils';
+import { getFileCategory, resolveMimeType } from '@/lib/fileTypes';
 import { useState } from 'react';
 
 interface FileRowProps {
@@ -38,28 +39,40 @@ interface FileRowProps {
   onMove?: () => void;
 }
 
+// Icons/colors are keyed off the shared classifier so a .mkv or .flac stored as
+// application/octet-stream still shows a film/music icon.
 const getFileIcon = (file: FileItem) => {
   if (file.type === 'folder') return Folder;
 
-  if (file.mimeType?.startsWith('image/')) return Image;
-  if (file.mimeType?.startsWith('video/')) return Film;
-  if (file.mimeType?.startsWith('audio/')) return Music;
-  if (file.mimeType?.includes('zip') || file.mimeType?.includes('rar') || file.mimeType?.includes('7z')) return FileArchive;
-  if (file.mimeType?.includes('pdf') || file.mimeType?.includes('document') || file.mimeType?.includes('word')) return FileText;
-  if (file.mimeType?.includes('code') || file.mimeType?.includes('javascript') || file.mimeType?.includes('json')) return FileCode;
-
-  return File;
+  switch (getFileCategory(file.name, file.mimeType)) {
+    case 'image': return Image;
+    case 'video': return Film;
+    case 'audio': return Music;
+    case 'archive': return FileArchive;
+    case 'code': return FileCode;
+    case 'document': return FileText;
+    default: return File;
+  }
 };
 
 const getFileColor = (file: FileItem) => {
   if (file.type === 'folder') return 'text-primary';
-  if (file.mimeType?.startsWith('image/')) return 'text-green-500';
-  if (file.mimeType?.startsWith('video/')) return 'text-purple-500';
-  if (file.mimeType?.startsWith('audio/')) return 'text-pink-500';
-  if (file.mimeType?.includes('pdf')) return 'text-red-500';
-  if (file.mimeType?.includes('spreadsheet') || file.mimeType?.includes('excel')) return 'text-green-600';
-  if (file.mimeType?.includes('presentation') || file.mimeType?.includes('powerpoint')) return 'text-orange-500';
-  return 'text-muted-foreground';
+
+  switch (getFileCategory(file.name, file.mimeType)) {
+    case 'image': return 'text-green-500';
+    case 'video': return 'text-purple-500';
+    case 'audio': return 'text-pink-500';
+    case 'archive': return 'text-amber-500';
+    case 'code': return 'text-cyan-500';
+    case 'document': {
+      const mime = resolveMimeType(file.name, file.mimeType);
+      if (mime === 'application/pdf') return 'text-red-500';
+      if (mime.includes('spreadsheet') || mime.includes('excel')) return 'text-green-600';
+      if (mime.includes('presentation') || mime.includes('powerpoint')) return 'text-orange-500';
+      return 'text-blue-500';
+    }
+    default: return 'text-muted-foreground';
+  }
 };
 
 const formatFileSize = (bytes?: number) => {

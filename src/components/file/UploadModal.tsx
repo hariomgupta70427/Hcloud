@@ -79,9 +79,9 @@ export function UploadModal({
                                         animate={{ opacity: 1, height: 'auto' }}
                                         className="mt-4 space-y-2 max-h-48 overflow-y-auto"
                                     >
-                                        {uploadingFiles.map((item, index) => (
+                                        {uploadingFiles.map((item) => (
                                             <div
-                                                key={`${item.file.name}-${index}`}
+                                                key={item.id}
                                                 className="flex items-center gap-3 p-3 rounded-lg bg-muted/50"
                                             >
                                                 {item.status === 'uploading' && (
@@ -107,8 +107,11 @@ export function UploadModal({
                                                             />
                                                         </div>
                                                     )}
+                                                    {item.status === 'pending' && (
+                                                        <p className="text-xs text-muted-foreground">Waiting…</p>
+                                                    )}
                                                     {item.status === 'error' && (
-                                                        <p className="text-xs text-red-500">{item.error}</p>
+                                                        <p className="text-xs text-red-500 break-words">{item.error}</p>
                                                     )}
                                                 </div>
                                                 <span className="text-xs text-muted-foreground flex-shrink-0">

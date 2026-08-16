@@ -209,9 +209,28 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'hcloud-auth',
+      // SECURITY: never persist the Telegram session to localStorage.
+      //
+      // `byodConfig.telegramSession` is a FULL-ACCOUNT MTProto credential — it
+      // grants read/write access to the user's entire Telegram account, not just
+      // their HCloud files. Keeping it in localStorage meant any XSS on the site
+      // (or any browser extension with page access) could exfiltrate it and take
+      // over the account outright.
+      //
+      // Dropping it here is safe because initAuth()'s onAuthStateChange callback
+      // reloads the full user document — session included — from Firestore on
+      // every start. The persisted copy exists only so the UI can render
+      // instantly before Firebase confirms; it never needs the credential.
       partialize: (state) => ({
-        user: state.user,
-        isAuthenticated: state.isAuthenticated
+        user: state.user
+          ? {
+              ...state.user,
+              byodConfig: state.user.byodConfig
+                ? { ...state.user.byodConfig, telegramSession: '' }
+                : state.user.byodConfig,
+            }
+          : null,
+        isAuthenticated: state.isAuthenticated,
       }),
     }
   )

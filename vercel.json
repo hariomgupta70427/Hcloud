@@ -12,5 +12,66 @@
             "source": "/(.*)",
             "destination": "/index.html"
         }
+    ],
+    "headers": [
+        {
+            "//": "Security headers for the app document. The site had NONE before, which meant no XSS mitigation and no clickjacking protection on the authenticated dashboard.",
+            "source": "/((?!api/).*)",
+            "headers": [
+                {
+                    "key": "Content-Security-Policy",
+                    "//1": "script-src 'self' with NO 'unsafe-inline'/'unsafe-eval' — index.html has no inline script and the eval-requiring crypto shim was removed from the bundle.",
+                    "//2": "style-src allows inline: Tailwind and the animation library inject style tags/attributes at runtime.",
+                    "//3": "connect-src covers Firebase Auth/Firestore and the Render stream+upload server.",
+                    "//4": "frame-src allows the Google Docs viewer used by OfficePreview.",
+                    "//5": "frame-ancestors 'none' blocks clickjacking of the dashboard.",
+                    "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https://hcloud.onrender.com; font-src 'self' data:; connect-src 'self' https://hcloud.onrender.com https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://firestore.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com; frame-src https://docs.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+                },
+                {
+                    "key": "X-Content-Type-Options",
+                    "value": "nosniff"
+                },
+                {
+                    "key": "X-Frame-Options",
+                    "value": "DENY"
+                },
+                {
+                    "key": "Referrer-Policy",
+                    "//": "Share links live in the URL path, so referrers must never leak them to third parties.",
+                    "value": "strict-origin-when-cross-origin"
+                },
+                {
+                    "key": "Strict-Transport-Security",
+                    "value": "max-age=63072000; includeSubDomains; preload"
+                },
+                {
+                    "key": "Permissions-Policy",
+                    "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+                },
+                {
+                    "key": "Cross-Origin-Opener-Policy",
+                    "//": "same-origin-allow-popups keeps the Google sign-in popup working while still isolating the browsing context.",
+                    "value": "same-origin-allow-popups"
+                }
+            ]
+        },
+        {
+            "//": "API responses: never cached, never framed, never sniffed. No CSP here — these return file bytes and JSON, not documents.",
+            "source": "/api/(.*)",
+            "headers": [
+                {
+                    "key": "X-Content-Type-Options",
+                    "value": "nosniff"
+                },
+                {
+                    "key": "Referrer-Policy",
+                    "value": "strict-origin-when-cross-origin"
+                },
+                {
+                    "key": "Strict-Transport-Security",
+                    "value": "max-age=63072000; includeSubDomains; preload"
+                }
+            ]
+        }
     ]
 }

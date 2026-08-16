@@ -4,6 +4,7 @@
  */
 
 import { getAuth } from 'firebase/auth';
+import { getIdTokenHeader } from '@/lib/authHeader';
 
 // Chunk size: 8MB (larger = fewer HTTP requests = faster upload)
 const CHUNK_SIZE = 8 * 1024 * 1024;
@@ -14,7 +15,30 @@ export const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'http
 const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
 const API_DOWNLOAD = `${UPLOAD_SERVER_URL}/download`;
-const API_STREAM = `${UPLOAD_SERVER_URL}/stream`;
+const API_HEALTH = `${UPLOAD_SERVER_URL}/health`;
+
+/**
+ * Wake the Render instance early.
+ *
+ * Render's free tier suspends the service after ~15 minutes idle, and the first
+ * request afterwards waits ~50 seconds for the container to boot. Firing this
+ * as soon as the app loads (and again before an upload) means the boot overlaps
+ * with the user browsing, so by the time they actually upload or play something
+ * the server is already awake.
+ *
+ * Deliberately fire-and-forget: a failure here must never surface to the user
+ * or block anything.
+ */
+let lastWarmAt = 0;
+export function warmUploadServer(): void {
+    const now = Date.now();
+    // At most once a minute — repeated pings buy nothing.
+    if (now - lastWarmAt < 60_000) return;
+    lastWarmAt = now;
+
+    void fetch(API_HEALTH, { method: 'GET', mode: 'cors', cache: 'no-store' })
+        .catch(() => { /* server asleep or offline — the real request will retry */ });
+}
 
 /**
  * Get authorization headers with Firebase ID token
@@ -37,15 +61,6 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 /**
- * Legacy streaming URL that embeds the raw session in the query string.
- * Kept for reference but NOT used — the session can leak into server access
- * logs and browser history. Prefer getByodStreamUrl() below.
- */
-export function getBYODStreamUrl(messageId: number, session: string): string {
-    return `${API_STREAM}?messageId=${messageId}&session=${encodeURIComponent(session)}`;
-}
-
-/**
  * Get a SECURE streaming URL for a BYOD file, usable directly as the `src`
  * of <audio>/<video>/<img> or an <iframe> for any content type.
  *
@@ -59,18 +74,35 @@ export function getBYODStreamUrl(messageId: number, session: string): string {
  * The raw Telegram session never appears in the URL, logs, or history — only
  * the opaque, expiring token does. The bytes flow browser <- Render directly
  * (no Vercel proxy hop), so playback is as fast as the server allows.
+ *
+ * @param opts.forDownload Ask the server for `Content-Disposition: attachment`.
+ *   Required for real downloads: the HTML `download` attribute is ignored on
+ *   cross-origin URLs, so without this a "Download" click just opens the file
+ *   in a new tab and plays it.
  */
-export async function getByodStreamUrl(messageId: number, session: string): Promise<string | null> {
+export async function getByodStreamUrl(
+    messageId: number,
+    session: string,
+    opts?: { forDownload?: boolean }
+): Promise<string | null> {
     try {
+        // Overlap the Render cold start with the token mint.
+        warmUploadServer();
+
         const res = await fetch('/api/telegram/session-token', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(await getIdTokenHeader()) },
             body: JSON.stringify({ session, messageId }),
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+            console.error('[getByodStreamUrl] Token mint failed:', res.status);
+            return null;
+        }
         const data = await res.json();
-        if (!data.token) return null;
-        return `${UPLOAD_SERVER_URL}/token-stream?token=${encodeURIComponent(data.token)}`;
+        if (!data?.token) return null;
+
+        const suffix = opts?.forDownload ? '&download=1' : '';
+        return `${UPLOAD_SERVER_URL}/token-stream?token=${encodeURIComponent(data.token)}${suffix}`;
     } catch (err) {
         console.error('[getByodStreamUrl] Failed to mint stream token:', err);
         return null;
@@ -175,19 +207,31 @@ async function finalizeUpload(
 }
 
 /**
- * Read a file chunk as base64
+ * Read a slice of the file and base64-encode it.
+ *
+ * The naive version built the binary string one character at a time
+ * (`binary += String.fromCharCode(bytes[i])`), which for an 8MB chunk meant 8
+ * million string concatenations on the main thread — the UI froze for a second
+ * or more per chunk, so a large video upload felt like the whole site had hung.
+ *
+ * Encoding in 32KB windows via `String.fromCharCode.apply` is orders of
+ * magnitude faster while staying well under the argument-count limit that makes
+ * the one-shot spread form throw RangeError on large inputs.
  */
 async function readChunkAsBase64(file: File, start: number, end: number): Promise<string> {
     const slice = file.slice(start, end);
     const arrayBuffer = await slice.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
-    // Convert to base64
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
+    const WINDOW = 32 * 1024; // safe for Function.prototype.apply
+    const parts: string[] = [];
+    for (let i = 0; i < bytes.length; i += WINDOW) {
+        parts.push(String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, Math.min(i + WINDOW, bytes.length)) as unknown as number[]
+        ));
     }
-    return btoa(binary);
+    return btoa(parts.join(''));
 }
 
 /**
@@ -195,22 +239,25 @@ async function readChunkAsBase64(file: File, start: number, end: number): Promis
  * @param file The file to upload
  * @param session Telegram session string
  * @param onProgress Progress callback
+ * @param mimeType Resolved MIME type. Pass the value from resolveMimeType() —
+ *   NOT raw `file.type`, which is empty for .mkv/.flac/.m4v on Windows and
+ *   would make Telegram store the file without audio/video attributes.
  */
 export async function uploadFileChunked(
     file: File,
     session: string,
-    onProgress?: (progress: UploadProgress) => void
+    onProgress?: (progress: UploadProgress) => void,
+    mimeType?: string
 ): Promise<ChunkedUploadResult> {
-    console.log(`[ChunkedUpload] Starting chunked upload for: ${file.name} (${file.size} bytes)`);
-
-    // Calculate total chunks
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const uploadId = generateUploadId();
+    const effectiveMime = mimeType || file.type || 'application/octet-stream';
 
-    console.log(`[ChunkedUpload] File will be split into ${totalChunks} chunks of ${CHUNK_SIZE / 1024 / 1024}MB each`);
-    console.log(`[ChunkedUpload] Upload ID: ${uploadId}`);
+    console.log(
+        `[ChunkedUpload] ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB, ${effectiveMime}) ` +
+        `-> ${totalChunks} chunk(s) of ${CHUNK_SIZE / 1024 / 1024}MB [${uploadId}]`
+    );
 
-    // Report initial progress
     onProgress?.({
         phase: 'preparing',
         chunksUploaded: 0,
@@ -218,19 +265,22 @@ export async function uploadFileChunked(
         percent: 0,
     });
 
+    // Wake the Render instance while we encode the first chunk. On the free tier
+    // a sleeping server costs ~50s of cold start, and doing it concurrently with
+    // encoding hides most of that latency.
+    warmUploadServer();
+
     // Upload each chunk sequentially
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
-
-        console.log(`[ChunkedUpload] Uploading chunk ${i + 1}/${totalChunks} (bytes ${start}-${end})`);
 
         // Read chunk as base64
         const chunkData = await readChunkAsBase64(file, start, end);
 
         // Upload chunk with retry logic
         let attempts = 0;
-        const maxAttempts = 3;
+        const maxAttempts = 4;
         let result: { success: boolean; error?: string } = { success: false };
 
         while (attempts < maxAttempts) {
@@ -241,7 +291,7 @@ export async function uploadFileChunked(
                 totalChunks,
                 chunkData,
                 file.name,
-                file.type || 'application/octet-stream',
+                effectiveMime,
                 session
             );
 
@@ -252,15 +302,16 @@ export async function uploadFileChunked(
             console.warn(`[ChunkedUpload] Chunk ${i} failed (attempt ${attempts}/${maxAttempts}): ${result.error}`);
 
             if (attempts < maxAttempts) {
-                // Wait before retry
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+                // Exponential backoff — the first failure is usually the Render
+                // cold start, which can take ~50s to resolve.
+                await new Promise(resolve => setTimeout(resolve, 1500 * attempts * attempts));
             }
         }
 
         if (!result.success) {
             return {
                 success: false,
-                error: `Failed to upload chunk ${i + 1}: ${result.error}`
+                error: `Failed to upload chunk ${i + 1} of ${totalChunks}: ${result.error}`
             };
         }
 
@@ -294,7 +345,7 @@ export async function uploadFileChunked(
             totalChunks,
             percent: 100,
         });
-        console.log(`[ChunkedUpload] Upload complete! MessageId: ${finalResult.messageId}, FileId: ${finalResult.fileId}`);
+        console.log(`[ChunkedUpload] Complete — messageId=${finalResult.messageId}, fileId=${finalResult.fileId}`);
     }
 
     return finalResult;

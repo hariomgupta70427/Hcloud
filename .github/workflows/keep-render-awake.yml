@@ -1,0 +1,58 @@
+name: Keep Render Awake
+
+# WHY THIS EXISTS
+# ---------------
+# The Render free tier suspends a web service after ~15 minutes with no inbound
+# requests. The next request then waits ~50 seconds for the container to boot,
+# which is what made HCloud feel broken-slow on the first upload or video play
+# after a quiet period.
+#
+# The server also self-pings (see startKeepAlive() in upload-server/server.ts),
+# but a sleeping process cannot wake itself — so this external cron is the half
+# that actually guarantees the service stays up.
+#
+# Setup: nothing required if the default URL is correct. To point at a different
+# deployment, add a repository variable named RENDER_URL
+# (Settings -> Secrets and variables -> Actions -> Variables).
+
+on:
+  schedule:
+    # Every 10 minutes, comfortably inside Render's ~15 minute idle window.
+    # Offset off the hour so this doesn't pile onto the busiest cron minute.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch: {}
+
+# Least privilege: this workflow only makes an outbound HTTP request.
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-render-awake
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health
+        env:
+          RENDER_URL: ${{ vars.RENDER_URL || 'https://hcloud.onrender.com' }}
+        run: |
+          set -uo pipefail
+          # A cold start can take ~60s, so allow a generous timeout and retry.
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                     --max-time 90 --retry 0 \
+                     "$RENDER_URL/health" || echo "000")
+            echo "attempt $attempt -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Render is awake."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning::Render did not return 200 after 3 attempts (last: $code)"
+          # Do not fail the workflow — a transient outage should not spam
+          # failure notifications every 10 minutes.
+          exit 0

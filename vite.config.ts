@@ -17,10 +17,13 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
+      // Minimal polyfills. gramjs (which needed crypto/stream/vm/zlib/http
+      // shims) no longer runs in the browser — all MTProto work happens on the
+      // Render server — so only the small set that library code still touches is
+      // shimmed. Dropping the rest removes a large amount of dead weight from
+      // the bundle and the crypto-browserify shim that required eval().
       nodePolyfills({
-        // Include polyfills for specific modules required by GramJS
-        // Crypto and stream are better handled by browserify aliases for full compatibility
-        include: ['buffer', 'process', 'util', 'stream', 'events', 'path', 'querystring', 'url', 'http', 'https', 'os', 'assert', 'constants', 'zlib', 'crypto'],
+        include: ['buffer', 'process', 'util', 'events'],
         globals: {
           Buffer: true,
           global: true,
@@ -32,14 +35,24 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
-        "crypto": "crypto-browserify",
-        "stream": "stream-browserify",
-        "vm": "vm-browserify",
       },
     },
     build: {
-      sourcemap: true,
+      // Source maps are NOT emitted for production: they would publish the
+      // entire readable source of the app to anyone who opens devtools.
+      sourcemap: mode !== 'production',
       chunkSizeWarningLimit: 1600,
+      rollupOptions: {
+        output: {
+          // Split the heaviest vendor code so the initial page load doesn't
+          // have to parse everything at once.
+          manualChunks: {
+            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+            'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
+            'vendor-motion': ['framer-motion'],
+          },
+        },
+      },
     },
     // Define environment variables
     define: {
@@ -51,10 +64,12 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.FIREBASE_STORAGE_BUCKET': JSON.stringify(env.FIREBASE_STORAGE_BUCKET),
       'import.meta.env.FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(env.FIREBASE_MESSAGING_SENDER_ID),
       'import.meta.env.FIREBASE_APP_ID': JSON.stringify(env.FIREBASE_APP_ID),
-      // NOTE: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are intentionally NOT exposed
-      // to the client. All Bot API calls go through /api/telegram/* serverless functions.
-      'import.meta.env.TELEGRAM_API_ID': JSON.stringify(env.TELEGRAM_API_ID),
-      'import.meta.env.TELEGRAM_API_HASH': JSON.stringify(env.TELEGRAM_API_HASH),
+      // NOTE: no Telegram credentials are exposed to the client.
+      // TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID have always been server-only.
+      // TELEGRAM_API_ID / TELEGRAM_API_HASH were briefly exposed here for an
+      // abandoned in-browser MTProto upload path; they are secrets that grant
+      // access to the Telegram app itself, so they are now server-only too and
+      // live exclusively on Vercel + Render.
     },
   };
 });

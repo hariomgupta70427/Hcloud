@@ -7,13 +7,29 @@ import {
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { FileItem } from '@/services/fileService';
+import { FileItem, derivePasswordVerifier } from '@/services/fileService';
 import { getPreviewType, PreviewType } from '@/components/preview/PreviewModal';
 import { toast } from 'sonner';
 
 // Bot API getFile only exposes a file_path for files <= 20MB. Larger managed
 // files simply cannot be streamed/downloaded through the managed proxy.
 const MANAGED_LIMIT = 20 * 1024 * 1024;
+
+/**
+ * Constant-time comparison of two hex strings.
+ *
+ * `a === b` on a secret short-circuits at the first differing character, which
+ * leaks how many leading characters matched and lets an attacker recover the
+ * value one character at a time. Comparing every character keeps the timing flat.
+ */
+function timingSafeEqualHex(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+        diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return diff === 0;
+}
 
 const TYPE_META: Record<PreviewType, { icon: typeof FileIcon; label: string }> = {
     image: { icon: ImageIcon, label: 'Image' },
@@ -44,7 +60,12 @@ export default function SharedFilePage() {
     // Password state
     const [password, setPassword] = useState('');
     const [isLocked, setIsLocked] = useState(false);
-    const [passwordHash, setPasswordHash] = useState<string | null>(null);
+    const [isCheckingPassword, setIsCheckingPassword] = useState(false);
+    // Salted PBKDF2 verifier (current scheme) and its salt.
+    const [passwordSalt, setPasswordSalt] = useState<string | null>(null);
+    const [passwordVerifier, setPasswordVerifier] = useState<string | null>(null);
+    // Legacy unsalted SHA-256 hash, for shares created before the change.
+    const [legacyPasswordHash, setLegacyPasswordHash] = useState<string | null>(null);
 
     // Preview state
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -79,8 +100,15 @@ export default function SharedFilePage() {
                 const fileData = { id: snapshot.id, ...data } as FileItem;
                 setFile(fileData);
 
-                if (data.shareSettings?.password) {
-                    setPasswordHash(data.shareSettings.password);
+                const share = data.shareSettings ?? {};
+                if (share.passwordVerifier && share.passwordSalt) {
+                    setPasswordVerifier(share.passwordVerifier);
+                    setPasswordSalt(share.passwordSalt);
+                    setIsLocked(true);
+                } else if (share.password) {
+                    // Legacy share: unsalted SHA-256. Still honoured so existing
+                    // links keep working; re-sharing upgrades it to PBKDF2.
+                    setLegacyPasswordHash(share.password);
                     setIsLocked(true);
                 } else {
                     loadPreviewUrl(fileData);
@@ -157,23 +185,40 @@ export default function SharedFilePage() {
         }
     };
 
-    const checkPassword = () => {
-        if (!passwordHash) return;
-        // SHA-256 hash comparison
-        crypto.subtle.digest('SHA-256', new TextEncoder().encode(password))
-            .then(hashBuffer => {
-                const hashArray = Array.from(new Uint8Array(hashBuffer));
-                const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-                if (hashHex === passwordHash) {
-                    setIsLocked(false);
-                    if (file) loadPreviewUrl(file);
-                } else {
-                    toast.error('Incorrect password');
-                }
-            })
-            .catch(() => {
-                toast.error('Verification failed');
-            });
+    const checkPassword = async () => {
+        if (!password) return;
+        setIsCheckingPassword(true);
+        try {
+            let ok = false;
+
+            if (passwordVerifier && passwordSalt) {
+                // Current scheme: salted PBKDF2-SHA256.
+                const candidate = await derivePasswordVerifier(password, passwordSalt);
+                ok = timingSafeEqualHex(candidate, passwordVerifier);
+            } else if (legacyPasswordHash) {
+                // Legacy scheme: unsalted SHA-256.
+                const digest = await crypto.subtle.digest(
+                    'SHA-256',
+                    new TextEncoder().encode(password)
+                );
+                const hex = Array.from(new Uint8Array(digest))
+                    .map((b) => b.toString(16).padStart(2, '0'))
+                    .join('');
+                ok = timingSafeEqualHex(hex, legacyPasswordHash);
+            }
+
+            if (ok) {
+                setIsLocked(false);
+                if (file) loadPreviewUrl(file);
+            } else {
+                toast.error('Incorrect password');
+            }
+        } catch (err) {
+            console.error('Password verification failed:', err);
+            toast.error('Verification failed. Please try again.');
+        } finally {
+            setIsCheckingPassword(false);
+        }
     };
 
     if (loading) {
@@ -219,16 +264,21 @@ export default function SharedFilePage() {
                         type="password"
                         value={password}
                         onChange={e => setPassword(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && checkPassword()}
-                        className="w-full px-4 py-3 rounded-xl bg-muted border-2 border-transparent focus:border-primary outline-none mb-4"
+                        onKeyDown={e => e.key === 'Enter' && !isCheckingPassword && checkPassword()}
+                        disabled={isCheckingPassword}
+                        className="w-full px-4 py-3 rounded-xl bg-muted border-2 border-transparent focus:border-primary outline-none mb-4 disabled:opacity-60"
                         placeholder="Password"
                         autoFocus
                     />
                     <button
                         onClick={checkPassword}
-                        className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors font-medium"
+                        disabled={isCheckingPassword || !password}
+                        className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors font-medium disabled:opacity-60 flex items-center justify-center gap-2"
                     >
-                        Unlock
+                        {/* PBKDF2 with 210k iterations takes a moment — show it,
+                            otherwise the button feels broken on slower devices. */}
+                        {isCheckingPassword && <Loader2 className="w-4 h-4 animate-spin" />}
+                        {isCheckingPassword ? 'Verifying…' : 'Unlock'}
                     </button>
                 </motion.div>
             </div>

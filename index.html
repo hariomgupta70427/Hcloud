@@ -43,30 +43,15 @@
 </head>
 
 <body>
-  <!-- Node.js polyfills for browser (required by GramJS) -->
-  <script>
-    // Buffer polyfill - must run before modules load
-    window.global = window.global || window;
-    window.process = window.process || { env: {} };
-  </script>
-
   <div id="root"></div>
+  <!--
+    All script must be external so the Content-Security-Policy in vercel.json can
+    forbid inline script (`script-src 'self'`) without needing 'unsafe-inline'.
+      • The old inline Buffer/global polyfill is now src/polyfills.ts, imported
+        first from main.tsx (it was also redundant with that file).
+      • Service-worker registration is now src/registerServiceWorker.ts.
+  -->
   <script type="module" src="/src/main.tsx"></script>
-
-  <!-- Service Worker Registration -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-          .then((registration) => {
-            console.log('[App] Service Worker registered with scope:', registration.scope);
-          })
-          .catch((error) => {
-            console.log('[App] Service Worker registration failed:', error);
-          });
-      });
-    }
-  </script>
 </body>
 
 </html>

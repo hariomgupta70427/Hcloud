@@ -10,7 +10,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { TelegramClient, sessions, Api } from 'telegram';
+import { TelegramClient, sessions, Api, utils } from 'telegram';
+import { iterDownload } from 'telegram/client/downloads';
+import bigInt from 'big-integer';
 const { StringSession } = sessions;
 
 // Environment variables
@@ -95,17 +97,18 @@ interface DecodedToken {
     email?: string;
 }
 
-// Cache for Google's public keys (refreshes every hour)
+// Cache for Google's public signing certificates (refreshed hourly)
 let cachedKeys: Record<string, string> = {};
 let keysLastFetched = 0;
 
 async function getGooglePublicKeys(): Promise<Record<string, string>> {
     const now = Date.now();
-    if (cachedKeys && now - keysLastFetched < 3600000) {
+    if (Object.keys(cachedKeys).length > 0 && now - keysLastFetched < 3600000) {
         return cachedKeys;
     }
     try {
         const res = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
+        if (!res.ok) return cachedKeys;
         cachedKeys = await res.json() as Record<string, string>;
         keysLastFetched = now;
         return cachedKeys;
@@ -114,20 +117,63 @@ async function getGooglePublicKeys(): Promise<Record<string, string>> {
     }
 }
 
+/**
+ * Verify a Firebase ID token — INCLUDING its RS256 signature.
+ *
+ * The previous implementation only base64-decoded the payload and checked the
+ * claims. That is not authentication: a JWT's payload is not secret and not
+ * integrity-protected on its own, so anyone could hand-craft
+ * `{"sub":"x","aud":"<project>","iss":"...","exp":<future>}`, base64 it, append
+ * any garbage signature, and be treated as a logged-in user.
+ *
+ * Node's crypto can verify RS256 against Google's X.509 certs directly, so no
+ * firebase-admin dependency is needed:
+ *   • pick the cert named by the token's `kid` header
+ *   • verify RSA-SHA256 over `header.payload`
+ *   • only then trust the claims (aud / iss / exp / iat / sub)
+ */
 async function verifyFirebaseToken(token: string): Promise<DecodedToken | null> {
     try {
-        // Decode the JWT payload (middle section) without verification library
-        // For full production security, use firebase-admin or a JWT library
         const parts = token.split('.');
         if (parts.length !== 3) return null;
 
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+        const [rawHeader, rawPayload, rawSignature] = parts;
+        const header = JSON.parse(Buffer.from(rawHeader, 'base64url').toString());
+        const payload = JSON.parse(Buffer.from(rawPayload, 'base64url').toString());
 
-        // Basic validation checks
-        if (!payload.sub) return null;
-        if (payload.aud !== FIREBASE_PROJECT_ID && FIREBASE_PROJECT_ID) return null;
-        if (payload.exp && payload.exp * 1000 < Date.now()) return null;
-        if (payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}` && FIREBASE_PROJECT_ID) return null;
+        if (header.alg !== 'RS256' || !header.kid) return null;
+
+        const keys = await getGooglePublicKeys();
+        const cert = keys[header.kid];
+        if (!cert) {
+            console.warn('⚠️  Auth: unknown token kid (key rotation?)');
+            return null;
+        }
+
+        const verifier = crypto.createVerify('RSA-SHA256');
+        verifier.update(`${rawHeader}.${rawPayload}`);
+        const signatureValid = verifier.verify(cert, Buffer.from(rawSignature, 'base64url'));
+        if (!signatureValid) {
+            console.warn('⚠️  Auth: token signature verification FAILED');
+            return null;
+        }
+
+        // Signature is good — now the claims can be trusted.
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (!payload.sub || typeof payload.sub !== 'string') return null;
+        if (!payload.exp || payload.exp <= nowSec) return null;
+        // Allow 60s of clock skew on iat.
+        if (payload.iat && payload.iat > nowSec + 60) return null;
+
+        if (!FIREBASE_PROJECT_ID) {
+            // Refuse to run "authenticated" routes without knowing which project
+            // to accept tokens from — otherwise any Firebase project's users
+            // would be admitted.
+            console.error('❌ FIREBASE_PROJECT_ID is not set; rejecting request');
+            return null;
+        }
+        if (payload.aud !== FIREBASE_PROJECT_ID) return null;
+        if (payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`) return null;
 
         return { uid: payload.sub, email: payload.email };
     } catch {
@@ -154,13 +200,20 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
     next();
 }
 
-// Health check endpoint (public — no auth required)
+// Health check endpoint (public — no auth required).
+// Doubles as the keep-alive target: Render's free tier sleeps a service after
+// ~15 minutes without inbound traffic, and waking it costs ~50s of cold start
+// on the user's very first upload/stream. Pinging this route keeps it warm.
 app.get('/health', (_: any, res: any) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
+        uptime: Math.round(process.uptime()),
+        warmClients: clientCache.size,
     });
 });
+app.head('/health', (_: any, res: any) => res.status(200).end());
 
 // ============================================
 // TELEGRAM CLIENT CACHE
@@ -226,6 +279,13 @@ interface UploadSession {
     mimeType: string;
     totalChunks: number;
     session: string;
+    /**
+     * Firebase uid of the user who started this upload. Every subsequent
+     * request for the same uploadId must come from the same user — otherwise a
+     * caller who guessed an uploadId could inject chunks into, inspect, or
+     * cancel someone else's upload.
+     */
+    ownerUid: string;
     receivedCount: number;
     totalSize: number;
     createdAt: number;
@@ -234,7 +294,6 @@ interface UploadSession {
 
 // In-memory storage for upload sessions
 const uploadSessions = new Map<string, UploadSession>();
-const streamCache = new Map<string, { buffer: Buffer; timestamp: number }>();
 
 // Clean up stale sessions (older than 2 hours)
 setInterval(() => {
@@ -258,6 +317,85 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // ============================================
+// MIME RESOLUTION
+// Mirrors src/lib/fileTypes.ts. The browser's File.type is empty for many
+// common containers (.mkv/.flac/.m4v/.m4a/.opus on Windows), which used to make
+// files land in Telegram as application/octet-stream — a Content-Type browsers
+// refuse to play in <video>/<audio>. Resolving from the extension here also
+// FIXES FILES ALREADY UPLOADED with the generic type, since playback derives
+// the type at stream time rather than trusting what was stored.
+// ============================================
+
+const EXT_TO_MIME: Record<string, string> = {
+    // video
+    mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
+    mkv: 'video/x-matroska', avi: 'video/x-msvideo', wmv: 'video/x-ms-wmv',
+    flv: 'video/x-flv', mpeg: 'video/mpeg', mpg: 'video/mpeg', '3gp': 'video/3gpp',
+    ogv: 'video/ogg',
+    // audio
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav',
+    flac: 'audio/flac', opus: 'audio/opus', oga: 'audio/ogg', ogg: 'audio/ogg',
+    wma: 'audio/x-ms-wma', aiff: 'audio/aiff', mid: 'audio/midi', midi: 'audio/midi',
+    // image
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+    avif: 'image/avif', heic: 'image/heic', heif: 'image/heif', tif: 'image/tiff',
+    tiff: 'image/tiff',
+    // documents / text
+    pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv',
+    json: 'application/json', xml: 'application/xml', html: 'text/html',
+    htm: 'text/html', css: 'text/css', js: 'text/javascript',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    // archives
+    zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
+    tar: 'application/x-tar', gz: 'application/gzip',
+};
+
+function getExtension(fileName: string): string {
+    const idx = fileName.lastIndexOf('.');
+    if (idx <= 0 || idx === fileName.length - 1) return '';
+    return fileName.slice(idx + 1).toLowerCase();
+}
+
+function isGenericMime(mime?: string | null): boolean {
+    if (!mime) return true;
+    const m = mime.toLowerCase().trim();
+    return m === '' || m === 'application/octet-stream' ||
+        m === 'binary/octet-stream' || m === 'application/unknown';
+}
+
+/** Best MIME type for a file: a specific stored type wins, else the extension. */
+// Exported for unit testing.
+export function resolveMimeType(fileName: string, providedMime?: string | null): string {
+    if (!isGenericMime(providedMime)) return providedMime!.toLowerCase().trim();
+    return EXT_TO_MIME[getExtension(fileName)] || 'application/octet-stream';
+}
+
+/**
+ * Make a client-supplied filename safe to use.
+ *
+ * The name reaches the filesystem indirectly and is sent to Telegram as the
+ * document filename, so path separators, traversal sequences and control
+ * characters all have to go.
+ */
+function sanitizeFileName(name: unknown): string {
+    if (typeof name !== 'string' || !name.trim()) return 'file';
+    const cleaned = name
+        .replace(/[/\\]/g, '_')          // no path separators
+        .replace(/\.\.+/g, '.')          // no traversal
+        .replace(/[\x00-\x1f\x7f]/g, '') // no control characters
+        .replace(/^\.+/, '')             // no leading dots (hidden/relative)
+        .trim()
+        .slice(0, 250);
+    return cleaned || 'file';
+}
+
+// ============================================
 // HELPER: Build file attributes for Telegram
 // ============================================
 
@@ -266,22 +404,26 @@ function buildFileAttributes(fileName: string, mimeType: string): Api.TypeDocume
         new Api.DocumentAttributeFilename({ fileName })
     ];
 
+    // Resolve first, so a file the browser reported as octet-stream still gets
+    // its audio/video attributes and is recognised by Telegram as media.
+    const mime = resolveMimeType(fileName, mimeType);
+
     // Audio files: add audio attribute so Telegram shows them as music/audio
-    if (mimeType.startsWith('audio/')) {
+    if (mime.startsWith('audio/')) {
         attrs.push(new Api.DocumentAttributeAudio({
-            duration: 0, // unknown duration
-            title: fileName.replace(/\.[^.]+$/, ''), // filename without extension
+            duration: 0, // unknown — Telegram fills this in from the container
+            title: fileName.replace(/\.[^.]+$/, ''),
             performer: '',
             voice: false,
         }));
     }
 
-    // Video files: add video attribute
-    if (mimeType.startsWith('video/')) {
+    // Video files: mark as streamable so Telegram allows partial reads.
+    if (mime.startsWith('video/')) {
         attrs.push(new Api.DocumentAttributeVideo({
             duration: 0,
-            w: 1920,
-            h: 1080,
+            w: 0, // unknown — do not claim a resolution we haven't measured
+            h: 0,
             supportsStreaming: true,
             roundMessage: false,
         }));
@@ -293,6 +435,10 @@ function buildFileAttributes(fileName: string, mimeType: string): Api.TypeDocume
 // ============================================
 // CHUNKED UPLOAD ENDPOINT
 // ============================================
+
+// Hard ceilings so a malicious or buggy client cannot fill the disk.
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2GB — matches the client cap
+const MAX_TOTAL_CHUNKS = 2048;                   // 2048 * 8MB comfortably covers 2GB
 
 app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) => {
     try {
@@ -306,10 +452,26 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
             session,
         } = req.body;
 
-        if (!uploadId || chunkIndex === undefined || !chunkData || !totalChunks || !session) {
-            return res.status(400).json({
-                error: 'Missing required fields: uploadId, chunkIndex, chunkData, totalChunks, session'
-            });
+        const uid = (req as any).user?.uid as string | undefined;
+        if (!uid) return res.status(401).json({ error: 'Unauthenticated' });
+
+        // Validate every field before it is used to touch the filesystem.
+        if (typeof uploadId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(uploadId)) {
+            return res.status(400).json({ error: 'Invalid uploadId' });
+        }
+        if (typeof chunkData !== 'string' || !chunkData) {
+            return res.status(400).json({ error: 'Missing chunkData' });
+        }
+        if (typeof session !== 'string' || !session) {
+            return res.status(400).json({ error: 'Missing session' });
+        }
+        const idx = Number(chunkIndex);
+        const total = Number(totalChunks);
+        if (!Number.isInteger(total) || total < 1 || total > MAX_TOTAL_CHUNKS) {
+            return res.status(400).json({ error: 'Invalid totalChunks' });
+        }
+        if (!Number.isInteger(idx) || idx < 0 || idx >= total) {
+            return res.status(400).json({ error: 'Invalid chunkIndex' });
         }
 
         // Get or create upload session
@@ -322,46 +484,60 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
             uploadSession = {
                 chunks: new Set(),
                 tempDir,
-                fileName: fileName || 'file',
-                mimeType: mimeType || 'application/octet-stream',
-                totalChunks,
+                // Strip path separators: the name is echoed back and used as the
+                // Telegram filename, and must never be able to escape a directory.
+                fileName: sanitizeFileName(fileName),
+                mimeType: typeof mimeType === 'string' && mimeType ? mimeType : 'application/octet-stream',
+                totalChunks: total,
                 session,
+                ownerUid: uid,
                 receivedCount: 0,
                 totalSize: 0,
                 createdAt: Date.now(),
                 lastActivity: Date.now(),
             };
             uploadSessions.set(uploadId, uploadSession);
-            console.log(`📂 New session: ${uploadId} (${fileName}, ${mimeType})`);
+            console.log(`📂 New session: ${uploadId} (${uploadSession.fileName}, ${uploadSession.mimeType})`);
 
             // Pre-warm Telegram connection while chunks upload
             getOrCreateClient(session).catch(() => { });
+        } else if (uploadSession.ownerUid !== uid) {
+            // Someone else's upload — do not confirm it exists.
+            return res.status(404).json({ error: 'Upload session not found' });
+        } else if (uploadSession.totalChunks !== total) {
+            return res.status(400).json({ error: 'totalChunks does not match this upload session' });
         }
 
         uploadSession.lastActivity = Date.now();
 
         // Write chunk to disk if not already received
-        if (!uploadSession.chunks.has(chunkIndex)) {
+        if (!uploadSession.chunks.has(idx)) {
             const chunkBuffer = Buffer.from(chunkData, 'base64');
-            const chunkPath = path.join(uploadSession.tempDir, `chunk_${chunkIndex}`);
-            fs.writeFileSync(chunkPath, chunkBuffer);
-            uploadSession.chunks.add(chunkIndex);
+            if (chunkBuffer.length === 0) {
+                return res.status(400).json({ error: 'chunkData did not decode to any data' });
+            }
+            if (uploadSession.totalSize + chunkBuffer.length > MAX_UPLOAD_BYTES) {
+                return res.status(413).json({ error: 'Upload exceeds the 2GB maximum' });
+            }
+            const chunkPath = path.join(uploadSession.tempDir, `chunk_${idx}`);
+            await fs.promises.writeFile(chunkPath, chunkBuffer);
+            uploadSession.chunks.add(idx);
             uploadSession.receivedCount++;
             uploadSession.totalSize += chunkBuffer.length;
         }
 
-        const progress = Math.round((uploadSession.receivedCount / totalChunks) * 100);
+        const progress = Math.round((uploadSession.receivedCount / total) * 100);
 
         return res.json({
             success: true,
             received: uploadSession.receivedCount,
-            total: totalChunks,
+            total,
             progress,
         });
 
     } catch (error: any) {
         console.error('❌ Chunk upload error:', error);
-        return res.status(500).json({ error: error.message || 'Chunk upload failed' });
+        return res.status(500).json({ error: 'Chunk upload failed' });
     }
 });
 
@@ -371,6 +547,7 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
 
 app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response) => {
     const { uploadId, session } = req.body;
+    const uid = (req as any).user?.uid as string | undefined;
 
     if (!uploadId || !session) {
         return res.status(400).json({ error: 'Missing uploadId or session' });
@@ -378,6 +555,11 @@ app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response)
 
     const uploadSession = uploadSessions.get(uploadId);
     if (!uploadSession) {
+        return res.status(404).json({ error: 'Upload session not found. It may have expired.' });
+    }
+
+    // Only the user who uploaded the chunks may finalize them.
+    if (uploadSession.ownerUid !== uid) {
         return res.status(404).json({ error: 'Upload session not found. It may have expired.' });
     }
 
@@ -400,21 +582,54 @@ app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response)
     console.log(`🔧 Assembling ${uploadSession.totalChunks} chunks for ${fileName}...`);
 
     try {
-        // Assemble file from chunk files on disk (in order)
+        // Assemble the file from the chunk files on disk, in order.
+        //
+        // The previous version did `writeStream.write(fs.readFileSync(chunk))`
+        // in a loop without ever waiting for a drain, so every chunk stayed
+        // queued in the stream's internal buffer: assembling a 1GB video needed
+        // ~1GB of heap on a 512MB Render instance and the process was OOM-killed
+        // mid-upload. Piping each chunk through and awaiting completion keeps
+        // memory flat at one chunk regardless of file size.
         const tempPath = path.join(os.tmpdir(), `hcloud_${uploadId}_${Date.now()}`);
         const writeStream = fs.createWriteStream(tempPath);
-        for (let i = 0; i < uploadSession.totalChunks; i++) {
-            const chunkPath = path.join(uploadSession.tempDir, `chunk_${i}`);
-            const chunkData = fs.readFileSync(chunkPath);
-            writeStream.write(chunkData);
+
+        try {
+            for (let i = 0; i < uploadSession.totalChunks; i++) {
+                const chunkPath = path.join(uploadSession.tempDir, `chunk_${i}`);
+                await new Promise<void>((resolve, reject) => {
+                    const readStream = fs.createReadStream(chunkPath);
+                    readStream.on('error', reject);
+                    readStream.on('end', resolve);
+                    // `end: false` keeps the destination open for the next chunk.
+                    readStream.pipe(writeStream, { end: false });
+                });
+            }
+        } catch (assembleError) {
+            writeStream.destroy();
+            try { await fs.promises.unlink(tempPath); } catch { /* ignore */ }
+            throw assembleError;
         }
-        writeStream.end();
+
         await new Promise<void>((resolve, reject) => {
             writeStream.on('finish', resolve);
             writeStream.on('error', reject);
+            writeStream.end();
         });
+
         const fileSize = fs.statSync(tempPath).size;
         console.log(`📄 Assembled: ${(fileSize / 1024 / 1024).toFixed(1)}MB`);
+
+        // Sanity check: a size mismatch means chunks were lost or duplicated, and
+        // uploading a corrupt file is worse than failing.
+        if (fileSize !== uploadSession.totalSize) {
+            try { await fs.promises.unlink(tempPath); } catch { /* ignore */ }
+            try { fs.rmSync(uploadSession.tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+            uploadSessions.delete(uploadId);
+            console.error(`❌ Size mismatch: assembled ${fileSize} vs received ${uploadSession.totalSize}`);
+            return res.status(500).json({
+                error: 'Assembled file size did not match the uploaded data. Please try again.',
+            });
+        }
 
         // Clean up chunk temp dir
         try {
@@ -484,12 +699,25 @@ app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response)
         }
 
         uploadSessions.delete(uploadId);
+
+        // Without a messageId the file exists in Telegram but nothing can ever
+        // address it — the client would store an unopenable record. Reporting
+        // failure here is the honest answer, even though the bytes did upload.
+        if (!messageId) {
+            console.error('❌ Upload stored but no messageId in response');
+            return res.status(502).json({
+                error: 'Telegram accepted the file but returned no message reference. Please try again.',
+            });
+        }
+
         console.log(`✅ MessageId: ${messageId}, FileId: ${fileId}`);
 
         return res.json({
             success: true,
             messageId,
-            fileId,
+            // fileId is informational for BYOD (retrieval uses messageId), so an
+            // empty value must not be sent as a falsy string the client drops.
+            fileId: fileId || `msg_${messageId}`,
             fileName,
             fileSize,
         });
@@ -534,38 +762,31 @@ app.post('/download', authMiddleware, async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'No media in message' });
         }
 
-        // Download the file
-        console.log('📥 Downloading from Telegram...');
-        const buffer = await client.downloadMedia(message, {}) as Buffer;
-
-        if (!buffer) {
-            return res.status(404).json({ error: 'Failed to download file' });
+        const info = getMediaInfo(message);
+        if (!info || !info.size) {
+            return res.status(415).json({ error: 'Unsupported or empty media' });
         }
 
-        // Determine content type
-        let contentType = 'application/octet-stream';
-        let dlFileName = 'file';
-        const media = message.media as any;
-        if (media.document) {
-            contentType = media.document.mimeType || contentType;
-            for (const attr of media.document.attributes || []) {
-                if (attr.fileName) {
-                    dlFileName = attr.fileName;
-                }
-            }
-        }
-
-        console.log(`📥 Downloaded: ${dlFileName} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
-
-        // Send file as response
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(dlFileName)}"`);
-        res.setHeader('Content-Length', buffer.length.toString());
+        // Stream the bytes straight through instead of buffering the whole file
+        // in RAM first — a 1GB download used to need 1GB of heap on a 512MB
+        // Render instance, which killed the process.
+        res.setHeader('Content-Type', info.contentType);
+        res.setHeader('Content-Length', info.size.toString());
+        res.setHeader(
+            'Content-Disposition',
+            `inline; filename*=UTF-8''${encodeURIComponent(info.fileName)}`
+        );
         res.setHeader('Cache-Control', 'private, max-age=3600');
-        return res.send(buffer);
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+
+        console.log(`📥 Streaming ${info.fileName} (${(info.size / 1024 / 1024).toFixed(1)}MB)`);
+        await pipeTelegramRange(client, message, res, 0, info.size - 1);
+        return;
 
     } catch (error: any) {
         console.error('❌ Download error:', error);
+
+        if (res.headersSent) return res.destroy();
 
         if (error.message?.includes('AUTH_KEY_UNREGISTERED') ||
             error.message?.includes('SESSION_REVOKED')) {
@@ -581,11 +802,197 @@ app.post('/download', authMiddleware, async (req: Request, res: Response) => {
 // Browser can use this directly as <audio src> or <video src>
 // ============================================
 
-// Shared streaming core: downloads (with brief cache) and writes the media to
-// the response, honouring HTTP Range for seeking. Used by both the authed
-// /stream route (dashboard) and the public /token-stream route (shared links).
+/**
+ * Resolve a Telegram message's media into the metadata a browser needs before
+ * it can stream: exact byte size, MIME type and original file name.
+ *
+ * Size MUST come from Telegram's own metadata — never from a downloaded buffer —
+ * because progressive streaming means we answer the request before we have read
+ * a single byte.
+ *
+ * It also has to come from `utils.getFileInfo()`, the SAME function iterDownload
+ * calls internally to pick which file location to fetch. Computing the size any
+ * other way risks disagreeing with what actually gets downloaded (for photos,
+ * gramjs always fetches the last entry in `sizes`), and a Content-Length that
+ * doesn't match the body makes the browser abort playback.
+ */
+function getMediaInfo(message: Api.Message): {
+    size: number;
+    contentType: string;
+    fileName: string;
+} | null {
+    const media = message.media as any;
+    if (!media) return null;
+
+    let size = 0;
+    try {
+        const info = utils.getFileInfo(media);
+        size = Number(info.size?.toString() ?? 0);
+    } catch {
+        return null; // media type gramjs cannot download
+    }
+    if (!size) return null;
+
+    // Documents (video, audio, pdf, zip — everything uploaded by HCloud)
+    if (media.document) {
+        const doc = media.document;
+        let fileName = 'file';
+        for (const attr of doc.attributes || []) {
+            if (attr.fileName) fileName = attr.fileName;
+        }
+
+        // Resolve from the filename when Telegram stored a generic type. This is
+        // what lets already-uploaded .mkv/.flac/.m4v files stream correctly
+        // without re-uploading them.
+        const contentType = resolveMimeType(fileName, doc.mimeType);
+        return { size, contentType, fileName };
+    }
+
+    // Photos — gramjs downloads the largest size, and getFileInfo reported its
+    // byte count above, so these two always agree.
+    if (media.photo) {
+        return { size, contentType: 'image/jpeg', fileName: 'photo.jpg' };
+    }
+
+    return null;
+}
+
+/** Parse a single-range `Range: bytes=start-end` header against a known size. */
+// Exported so the range math can be unit-tested; nothing else imports it.
+export function parseRange(
+    rangeHeader: string | undefined,
+    totalSize: number
+): { start: number; end: number } | 'invalid' | null {
+    if (!rangeHeader) return null;
+
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+    if (!match) return 'invalid';
+
+    const [, rawStart, rawEnd] = match;
+    if (rawStart === '' && rawEnd === '') return 'invalid';
+
+    let start: number;
+    let end: number;
+
+    if (rawStart === '') {
+        // Suffix range: `bytes=-500` means the LAST 500 bytes.
+        const suffixLength = parseInt(rawEnd, 10);
+        if (!Number.isFinite(suffixLength) || suffixLength <= 0) return 'invalid';
+        start = Math.max(0, totalSize - suffixLength);
+        end = totalSize - 1;
+    } else {
+        start = parseInt(rawStart, 10);
+        end = rawEnd === '' ? totalSize - 1 : parseInt(rawEnd, 10);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return 'invalid';
+        // A start past EOF must produce 416, not an empty 206.
+        if (start >= totalSize) return 'invalid';
+        if (end >= totalSize) end = totalSize - 1;
+        if (end < start) return 'invalid';
+    }
+
+    return { start, end };
+}
+
+// Telegram requires download offsets aligned to 4KB and serves at most 512KB
+// per request. 512KB parts give the best throughput/latency balance.
+const TG_ALIGN = 4096;
+const TG_PART_SIZE = 512 * 1024;
+
+/**
+ * Pipe exactly bytes [start, end] of a Telegram file to `res`, fetching from
+ * Telegram progressively and writing each part as soon as it arrives.
+ *
+ * This is the core of Task A: previously the whole file was buffered in RAM
+ * before a single byte reached the browser, so a 700MB video took minutes to
+ * start and every seek re-read the entire file. Now first-byte latency is one
+ * 512KB Telegram round-trip regardless of file size, and a seek fetches only
+ * the bytes after the seek point.
+ *
+ * Backpressure is respected via res.write()'s return value + 'drain', so a slow
+ * client can never balloon the Node heap.
+ */
+async function pipeTelegramRange(
+    client: TelegramClient,
+    message: Api.Message,
+    res: Response,
+    start: number,
+    end: number
+): Promise<void> {
+    // Align the download offset DOWN to a 4KB boundary, then discard the extra
+    // leading bytes so the client receives exactly what it asked for.
+    const alignedStart = start - (start % TG_ALIGN);
+    let skip = start - alignedStart;
+    let remaining = end - start + 1;
+
+    const iterator = iterDownload(client, {
+        file: message.media as Api.TypeMessageMedia,
+        offset: bigInt(alignedStart),
+        requestSize: TG_PART_SIZE,
+    });
+
+    // If the client disconnects (user seeks, closes tab, hits next track) stop
+    // pulling from Telegram immediately instead of downloading the whole range.
+    let aborted = false;
+    const onAbort = () => { aborted = true; };
+    res.on('close', onAbort);
+
+    try {
+        for await (const rawChunk of iterator) {
+            if (aborted || remaining <= 0) break;
+            if (!rawChunk || rawChunk.length === 0) continue;
+
+            let chunk: Buffer = rawChunk;
+
+            // Drop the alignment padding at the head of the first part.
+            if (skip > 0) {
+                if (skip >= chunk.length) {
+                    skip -= chunk.length;
+                    continue;
+                }
+                chunk = chunk.subarray(skip);
+                skip = 0;
+            }
+
+            // Never overshoot the requested range.
+            if (chunk.length > remaining) {
+                chunk = chunk.subarray(0, remaining);
+            }
+            remaining -= chunk.length;
+
+            if (!res.write(chunk)) {
+                // Kernel/socket buffer is full — wait for it to drain so memory
+                // usage stays flat even for a slow client on a huge file.
+                await new Promise<void>((resolve) => {
+                    const cleanup = () => {
+                        res.off('drain', onDrain);
+                        res.off('close', onClose);
+                        resolve();
+                    };
+                    const onDrain = () => cleanup();
+                    const onClose = () => { aborted = true; cleanup(); };
+                    res.once('drain', onDrain);
+                    res.once('close', onClose);
+                });
+            }
+        }
+    } finally {
+        res.off('close', onAbort);
+        // Release the borrowed DC sender / pending requests.
+        try { await (iterator as any).close?.(); } catch { /* ignore */ }
+    }
+
+    if (!res.writableEnded) res.end();
+}
+
+/**
+ * Shared streaming core used by BOTH the authed /stream route (dashboard) and
+ * the public /token-stream route (share links).
+ *
+ * Streams progressively with full HTTP Range support, so ANY content type —
+ * video, audio, image, pdf, arbitrary binary — plays/seeks natively in the
+ * browser without downloading the file first.
+ */
 async function streamMedia(req: Request, res: Response, messageId: number, session: string) {
-    console.log(`🎵 Stream request for message ${messageId}`);
     const client = await getOrCreateClient(session);
 
     const messages = await client.getMessages('me', { ids: [messageId] });
@@ -598,93 +1005,73 @@ async function streamMedia(req: Request, res: Response, messageId: number, sessi
         return res.status(404).json({ error: 'No media in message' });
     }
 
-    // Get file metadata
-    let contentType = 'application/octet-stream';
-    let streamFileName = 'file';
-    const media = message.media as any;
-    if (media.document) {
-        contentType = media.document.mimeType || contentType;
-        for (const attr of media.document.attributes || []) {
-            if (attr.fileName) streamFileName = attr.fileName;
-        }
+    const info = getMediaInfo(message);
+    if (!info || !info.size) {
+        return res.status(415).json({ error: 'Unsupported or empty media' });
     }
 
-    console.log(`🎵 Streaming: ${streamFileName} (${contentType})`);
+    const { size: totalSize, contentType, fileName } = info;
 
-    // Brief in-memory cache so seeking (repeated Range requests) doesn't re-download.
-    const cacheKey = `${session.substring(0, 20)}_${messageId}`;
-    let buffer: Buffer;
-    const cached = streamCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
-        buffer = cached.buffer;
-        console.log(`🎵 Using cached buffer for ${streamFileName}`);
-    } else {
-        const downloaded = await client.downloadMedia(message, {}) as Buffer;
-        if (!downloaded) {
-            return res.status(404).json({ error: 'Failed to download file' });
-        }
-        buffer = downloaded;
-        if (streamCache.size > 10) {
-            const oldest = streamCache.keys().next().value;
-            if (oldest) streamCache.delete(oldest);
-        }
-        streamCache.set(cacheKey, { buffer, timestamp: Date.now() });
-    }
-
-    const totalSize = buffer.length;
-
-    // Handle Range requests for seeking in audio/video
-    const rangeHeader = req.headers.range;
-    if (rangeHeader) {
-        const parts = rangeHeader.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
-        const chunkSize = end - start + 1;
-
-        res.status(206);
-        res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
-        res.setHeader('Content-Length', chunkSize.toString());
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Cache-Control', 'private, max-age=3600');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
-        return res.send(buffer.subarray(start, end + 1));
-    }
-
-    // No Range header — send full file
+    // Common headers. `Accept-Ranges` is what tells the browser it may seek —
+    // without it, <video>/<audio> refuse to show a scrubbable timeline.
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Length', totalSize.toString());
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(streamFileName)}"`);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=3600');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
-    return res.send(buffer);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type, Accept-Ranges');
+
+    // `?download=1` forces a save-to-disk instead of inline playback.
+    //
+    // This exists because the HTML `download` attribute on an <a> is IGNORED for
+    // cross-origin URLs — and this server is a different origin from the app. So
+    // a "Download" click used to just open the video in a new tab and play it.
+    // Only the server can decide "attachment", hence this flag.
+    const asAttachment = req.query.download === '1' || req.query.download === 'true';
+    res.setHeader(
+        'Content-Disposition',
+        `${asAttachment ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(fileName)}`
+    );
+
+    const range = parseRange(req.headers.range, totalSize);
+
+    // Unsatisfiable range → 416 with the real size so the client can retry.
+    if (range === 'invalid') {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${totalSize}`);
+        return res.end();
+    }
+
+    const start = range ? range.start : 0;
+    const end = range ? range.end : totalSize - 1;
+    const length = end - start + 1;
+
+    if (range) {
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+    } else {
+        res.status(200);
+    }
+    res.setHeader('Content-Length', length.toString());
+
+    // A HEAD request must carry all headers but no body — players use it to
+    // probe size/range support before requesting any bytes.
+    if (req.method === 'HEAD') {
+        return res.end();
+    }
+
+    console.log(`🎬 Stream ${fileName} [${contentType}] bytes ${start}-${end}/${totalSize}`);
+    await pipeTelegramRange(client, message, res, start, end);
 }
 
-// Authed stream (dashboard playback) — requires a Firebase ID token.
-app.get('/stream', authMiddleware, async (req: Request, res: Response) => {
-    const messageId = parseInt(req.query.messageId as string);
-    const session = req.query.session as string;
-
-    if (!messageId || !session) {
-        return res.status(400).json({ error: 'Missing messageId or session query params' });
-    }
-
-    try {
-        return await streamMedia(req, res, messageId, session);
-    } catch (error: any) {
-        console.error('❌ Stream error:', error);
-        if (!res.headersSent) return res.status(500).json({ error: error.message || 'Stream failed' });
-    }
-});
-
-// Public token stream (shared links + dashboard media, proxied from Vercel).
+// Public token stream (dashboard media + shared links, entered via Vercel).
 // The encrypted token IS the capability — it carries session+messageId and is
 // minted server-side on Vercel, so NO Firebase auth is required here. This is
 // how a public /s/<id> page can play a BYOD file without the owner's session.
-app.get('/token-stream', async (req: Request, res: Response) => {
+//
+// There is deliberately no route that accepts a raw `session` query parameter:
+// that would write the user's long-lived Telegram session into access logs,
+// proxy caches and browser history.
+const tokenStreamHandler = async (req: Request, res: Response) => {
     const token = req.query.token as string;
     if (!token) return res.status(400).json({ error: 'Missing token' });
 
@@ -698,8 +1085,16 @@ app.get('/token-stream', async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('❌ Token-stream error:', error);
         if (!res.headersSent) return res.status(500).json({ error: error.message || 'Stream failed' });
+        // Headers already flushed mid-stream — the only honest signal left is to
+        // kill the connection so the player reports an error instead of treating
+        // a truncated body as a complete file.
+        return res.destroy();
     }
-});
+};
+
+app.get('/token-stream', tokenStreamHandler);
+// Safari and several media players issue a HEAD probe before playing.
+app.head('/token-stream', tokenStreamHandler);
 
 // ============================================
 // STATUS ENDPOINT
@@ -709,7 +1104,8 @@ app.get('/upload/status/:uploadId', authMiddleware, (req: Request, res: Response
     const { uploadId } = req.params;
     const session = uploadSessions.get(uploadId);
 
-    if (!session) {
+    // Owner-only: progress reveals filenames and sizes.
+    if (!session || session.ownerUid !== (req as any).user?.uid) {
         return res.status(404).json({ error: 'Upload session not found' });
     }
 
@@ -727,16 +1123,32 @@ app.get('/upload/status/:uploadId', authMiddleware, (req: Request, res: Response
 // CANCEL UPLOAD ENDPOINT
 // ============================================
 
-app.delete('/upload/:uploadId', (req: Request, res: Response) => {
+// Requires auth (this used to be wide open, so anyone could destroy another
+// user's in-flight upload by guessing its uploadId) and also removes the
+// half-written chunk files instead of leaking them into the temp directory
+// until the 2-hour sweeper ran.
+app.delete('/upload/:uploadId', authMiddleware, (req: Request, res: Response) => {
     const { uploadId } = req.params;
+    const uploadSession = uploadSessions.get(uploadId);
 
-    if (uploadSessions.has(uploadId)) {
-        uploadSessions.delete(uploadId);
-        console.log(`🗑️ Cancelled: ${uploadId}`);
-        return res.json({ success: true });
+    if (!uploadSession) {
+        return res.status(404).json({ error: 'Upload session not found' });
     }
 
-    return res.status(404).json({ error: 'Upload session not found' });
+    if ((req as any).user?.uid !== uploadSession.ownerUid) {
+        // Don't confirm the id exists to a caller who doesn't own it.
+        return res.status(404).json({ error: 'Upload session not found' });
+    }
+
+    try {
+        if (uploadSession.tempDir && fs.existsSync(uploadSession.tempDir)) {
+            fs.rmSync(uploadSession.tempDir, { recursive: true, force: true });
+        }
+    } catch { /* ignore */ }
+
+    uploadSessions.delete(uploadId);
+    console.log(`🗑️ Cancelled: ${uploadId}`);
+    return res.json({ success: true });
 });
 
 // ============================================
@@ -762,6 +1174,53 @@ app.get('/stats', (req: Request, res: Response) => {
 });
 
 // ============================================
+// KEEP-ALIVE (anti cold-start)
+// ============================================
+// Render's free tier suspends a service after ~15 minutes with no inbound
+// requests; the next request then pays a ~50 second cold start, which is the
+// "site feels slow" problem. A self-ping goes out to the public URL and comes
+// back in through Render's router, so it counts as real inbound traffic and
+// keeps the instance hot.
+//
+// A self-ping cannot RESURRECT a service that already slept, so also point an
+// external uptime cron (GitHub Actions / cron-job.org / UptimeRobot) at
+// GET /health every 10 minutes. Both together give a permanently warm server.
+const SELF_URL = (process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || '').replace(/\/$/, '');
+const KEEP_ALIVE_MS = 10 * 60 * 1000; // comfortably under Render's ~15 min idle window
+
+function startKeepAlive() {
+    if (!SELF_URL) {
+        console.log('ℹ️  Keep-alive disabled (no RENDER_EXTERNAL_URL / SELF_URL set)');
+        return;
+    }
+    if (process.env.DISABLE_KEEP_ALIVE === 'true') {
+        console.log('ℹ️  Keep-alive disabled via DISABLE_KEEP_ALIVE');
+        return;
+    }
+
+    console.log(`💓 Keep-alive enabled: ${SELF_URL}/health every ${KEEP_ALIVE_MS / 60000} min`);
+
+    const ping = async () => {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 15000);
+            await fetch(`${SELF_URL}/health`, {
+                method: 'HEAD',
+                signal: controller.signal,
+                headers: { 'User-Agent': 'hcloud-keepalive' },
+            });
+            clearTimeout(timer);
+        } catch {
+            // A failed ping is harmless — the next one will run on schedule.
+        }
+    };
+
+    const timer = setInterval(ping, KEEP_ALIVE_MS);
+    // Don't hold the event loop open purely for the keep-alive timer.
+    if (typeof timer.unref === 'function') timer.unref();
+}
+
+// ============================================
 // ERROR HANDLING
 // ============================================
 
@@ -782,6 +1241,18 @@ app.listen(PORT, () => {
     console.log(`   Port: ${PORT}`);
     console.log(`   CORS: ${allowedOrigins.join(', ')}`);
     console.log(`   API: ${TELEGRAM_API_ID ? '✅' : '❌'}`);
+    console.log(`   Stream tokens: ${STREAM_TOKEN_SECRET ? '✅' : '❌ (set STREAM_TOKEN_SECRET)'}`);
     console.log('🚀 ================================');
     console.log('');
+
+    startKeepAlive();
+});
+
+// A single unhandled rejection (e.g. a Telegram socket dying mid-download)
+// must not take the whole server down and force a cold start for every user.
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️  Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('⚠️  Uncaught exception:', err);
 });

@@ -169,11 +169,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             });
         }
 
-        // Return full error details for debugging
+        // Log the full error server-side; return only a safe message.
+        // Previously the stack trace and error class were sent to the client,
+        // which discloses file paths, dependency versions and internal structure
+        // to anyone who can trigger a failure.
+        console.error('[verify-code] Unhandled error:', error);
         return res.status(500).json({
-            error: `Verification failed: ${errorMessage}`,
-            stack: error.stack,
-            type: error.name
+            error: 'Verification failed. Please request a new code and try again.',
         });
     }
 }

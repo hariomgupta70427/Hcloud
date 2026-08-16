@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
+import { requireAuth } from '../_lib/firebaseAuth';
+import { isAllowedOrigin } from '../_lib/cors';
 
 /**
  * Stateless, self-contained stream tokens.
@@ -82,9 +84,16 @@ export function getSessionFromToken(token: string): { session: string; messageId
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS is restricted to the app's own origin: this endpoint mints capability
+    // tokens, so it must not be callable from arbitrary websites.
+    const origin = req.headers.origin as string | undefined;
+    if (origin && isAllowedOrigin(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -93,17 +102,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: 'Stream token secret not configured on server' });
     }
 
-    try {
-        const { session, messageId, ttlSeconds } = req.body;
+    // AUTHENTICATION REQUIRED.
+    // Without this, the endpoint was an open oracle: anyone could hand it any
+    // session string and get back a stream capability valid for up to 7 days.
+    const user = await requireAuth(req, res);
+    if (!user) return;
 
-        if (!session || !messageId) {
-            return res.status(400).json({ error: 'session and messageId are required' });
+    try {
+        const { session, messageId, ttlSeconds } = req.body ?? {};
+
+        if (typeof session !== 'string' || !session) {
+            return res.status(400).json({ error: 'session is required' });
+        }
+        const parsedMessageId = Number(messageId);
+        if (!Number.isInteger(parsedMessageId) || parsedMessageId <= 0) {
+            return res.status(400).json({ error: 'A valid messageId is required' });
         }
 
-        const token = createStreamToken(session, parseInt(messageId), ttlSeconds);
+        const token = createStreamToken(session, parsedMessageId, ttlSeconds);
         return res.status(200).json({ token });
     } catch (error: any) {
         console.error('[session-token] Error:', error);
-        return res.status(500).json({ error: error.message || 'Failed to create token' });
+        // Never echo internal error text to the client.
+        return res.status(500).json({ error: 'Failed to create token' });
     }
 }

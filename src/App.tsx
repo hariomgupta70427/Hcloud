@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { useAuthStore } from "./stores/authStore";
+import { warmUploadServer } from "./services/chunkedUploadService";
 import { motion, AnimatePresence } from "framer-motion";
 import { Cloud } from "lucide-react";
 import AuthPage from "./pages/AuthPage";
@@ -88,13 +89,23 @@ function AuthSplashScreen() {
 
 // Auth initializer component
 function AuthInitializer({ children }: { children: React.ReactNode }) {
-  const { initAuth, isInitialized } = useAuthStore();
+  const { initAuth, isInitialized, user } = useAuthStore();
 
   useEffect(() => {
     // Initialize Firebase auth listener
     const unsubscribe = initAuth();
     return () => unsubscribe();
   }, [initAuth]);
+
+  // Wake the Render upload/stream server as soon as we know the signed-in user
+  // relies on it. Its free tier sleeps after ~15 min idle and takes ~50s to
+  // boot, so warming it during page load means the delay is already spent by
+  // the time the user actually uploads or plays something.
+  useEffect(() => {
+    if (user?.storageMode === 'byod') {
+      warmUploadServer();
+    }
+  }, [user?.storageMode]);
 
   // Show splash screen until auth is initialized
   return (

@@ -15,12 +15,12 @@ import { ShareDialog } from '@/components/file/ShareDialog';
 import { MoveDialog } from '@/components/file/MoveDialog';
 import { FileCardSkeleton } from '@/components/common/Skeleton';
 import { EmptyState } from '@/components/common/EmptyState';
-import { PreviewModal, getPreviewType, PreviewFile } from '@/components/preview/PreviewModal';
+import { PreviewModal } from '@/components/preview/PreviewModal';
 import { FileItem } from '@/services/fileService';
 import * as fileService from '@/services/fileService';
-import { getFileFromTelegram, getManagedStreamUrl } from '@/services/telegramService';
-import { downloadBYODFile, getByodStreamUrl } from '@/services/chunkedUploadService';
+import { getFileCategory } from '@/lib/fileTypes';
 import { useUpload } from '@/hooks/useUpload';
+import { useFileActions } from '@/hooks/useFileActions';
 import { toast } from 'sonner';
 
 export default function FilesPage() {
@@ -84,9 +84,19 @@ export default function FilesPage() {
   const [shareFile, setShareFile] = useState<FileItem | null>(null);
   const [moveFile, setMoveFile] = useState<FileItem | null>(null);
 
-  // Preview state
-  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
-  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  // Preview / open / download are handled by the shared hook so this page
+  // cannot drift out of sync with Starred, Recent, Shared and the Dashboard.
+  const {
+    previewFile,
+    isLoadingPreview,
+    openFile,
+    downloadFile,
+    downloadPreviewFile,
+    closePreview,
+  } = useFileActions({
+    onOpenFolder: (folder) => navigateToFolder(folder.id, folder.name),
+  });
+
   const [searchResults, setSearchResults] = useState<FileItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [allFolders, setAllFolders] = useState<FileItem[]>([]);
@@ -155,23 +165,21 @@ export default function FilesPage() {
     })
     .filter((file) => {
       if (!filterType) return true;
+      if (filterType === 'folders') return file.type === 'folder';
+      if (file.type === 'folder') return false;
+
+      // Classify by MIME *and* filename. A mime-only test used to hide every
+      // .mkv/.flac/.m4v file from the Videos/Audio filters, because the browser
+      // reports no type for those and they were stored as octet-stream.
+      const category = getFileCategory(file.name, file.mimeType);
       switch (filterType) {
-        case 'images':
-          return file.mimeType?.startsWith('image/');
-        case 'videos':
-          return file.mimeType?.startsWith('video/');
-        case 'audio':
-          return file.mimeType?.startsWith('audio/');
-        case 'documents':
-          return file.mimeType?.includes('pdf') || file.mimeType?.includes('document') || file.mimeType?.includes('word') || file.mimeType?.includes('spreadsheet') || file.mimeType?.includes('presentation');
-        case 'archives':
-          return file.mimeType?.includes('zip') || file.mimeType?.includes('rar') || file.mimeType?.includes('7z') || file.mimeType?.includes('tar') || file.mimeType?.includes('gzip');
-        case 'code':
-          return file.mimeType?.includes('javascript') || file.mimeType?.includes('json') || file.mimeType?.includes('html') || file.mimeType?.includes('css') || file.mimeType?.includes('xml') || file.mimeType?.includes('text/plain');
-        case 'folders':
-          return file.type === 'folder';
-        default:
-          return true;
+        case 'images': return category === 'image';
+        case 'videos': return category === 'video';
+        case 'audio': return category === 'audio';
+        case 'documents': return category === 'document';
+        case 'archives': return category === 'archive';
+        case 'code': return category === 'code';
+        default: return true;
       }
     });
 
@@ -198,51 +206,6 @@ export default function FilesPage() {
       setRenameFile(null);
     } catch (err) {
       console.error('Failed to rename:', err);
-    }
-  };
-
-  const handleDownloadContext = async (file: FileItem) => {
-    // Only download files, not folders
-    if (file.type === 'folder' || !file.telegramFileId) return;
-
-    const toastId = toast.loading(`Preparing download: ${file.name}`);
-    try {
-      // BYOD files: download via Render server
-      if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-        const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
-        if (result.success && result.blobUrl) {
-          const link = document.createElement('a');
-          link.href = result.blobUrl;
-          link.download = file.name;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          // Revoke after a delay
-          setTimeout(() => URL.revokeObjectURL(result.blobUrl!), 30000);
-          toast.dismiss(toastId);
-          toast.success('Download started');
-        } else {
-          toast.error(result.error || 'Failed to download', { id: toastId });
-        }
-      } else {
-        // Managed files: download via Bot API
-        const result = await getFileFromTelegram(file.telegramFileId);
-        if (result.success && result.downloadUrl) {
-          const link = document.createElement('a');
-          link.href = result.downloadUrl;
-          link.download = file.name;
-          link.target = '_blank';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          toast.dismiss(toastId);
-          toast.success('Download started');
-        } else {
-          toast.error('Failed to get download link', { id: toastId });
-        }
-      }
-    } catch (e) {
-      toast.error('Download failed', { id: toastId });
     }
   };
 
@@ -279,124 +242,6 @@ export default function FilesPage() {
     return await shareItem(shareFile.id, settings, byod);
   };
 
-  const handleFileClick = async (file: FileItem) => {
-    if (file.type === 'folder') {
-      navigateToFolder(file.id, file.name);
-    } else {
-      // Open file preview
-      if (!file.telegramFileId) {
-        toast.error('File not available');
-        return;
-      }
-
-      const previewType = getPreviewType(file.name, file.mimeType);
-      const isByod = file.storageType === 'byod' && !!file.telegramMessageId && !!user?.byodConfig?.telegramSession;
-
-      // ── Stream every previewable type directly (no full-file pre-download) ──
-      //   • Managed → Vercel Bot-API proxy (same-origin, honours Range).
-      //   • BYOD    → Render /token-stream via a short-lived encrypted token
-      //     (session never appears in the URL). True streaming: the media
-      //     element fetches bytes on demand and can seek.
-      const streamable = previewType === 'audio' || previewType === 'video'
-        || previewType === 'image' || previewType === 'pdf' || previewType === 'office';
-
-      if (streamable) {
-        let streamUrl: string | undefined;
-        if (isByod) {
-          setIsLoadingPreview(true);
-          streamUrl = await getByodStreamUrl(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
-          setIsLoadingPreview(false);
-          if (!streamUrl) {
-            toast.error('Failed to prepare stream');
-            return;
-          }
-        } else {
-          streamUrl = `${window.location.origin}${getManagedStreamUrl(file.telegramFileId)}`;
-        }
-        setPreviewFile({
-          id: file.id,
-          name: file.name,
-          url: streamUrl,
-          type: previewType,
-          mimeType: file.mimeType,
-        });
-        return;
-      }
-
-      // ── Non-streamable (code / unknown): fetch the bytes, then render ──
-      setIsLoadingPreview(true);
-      toast.loading('Loading file...', { id: 'file-loading' });
-
-      try {
-        let downloadUrl: string | undefined;
-
-        // BYOD files: download via Render server
-        if (isByod) {
-          const result = await downloadBYODFile(file.telegramMessageId!, user!.byodConfig!.telegramSession!);
-          if (result.success && result.blobUrl) {
-            downloadUrl = result.blobUrl;
-          }
-        } else {
-          // Managed files: get URL via Bot API
-          const result = await getFileFromTelegram(file.telegramFileId);
-          if (result.success && result.downloadUrl) {
-            downloadUrl = result.downloadUrl;
-          }
-        }
-
-        if (downloadUrl) {
-          // For code files, fetch the text content so CodePreview can render it
-          let textContent: string | undefined;
-          if (previewType === 'code') {
-            try {
-              const textRes = await fetch(downloadUrl);
-              if (textRes.ok) {
-                textContent = await textRes.text();
-              }
-            } catch (err) {
-              console.warn('Failed to fetch code content:', err);
-            }
-          }
-
-          setPreviewFile({
-            id: file.id,
-            name: file.name,
-            url: downloadUrl,
-            type: previewType,
-            mimeType: file.mimeType,
-            content: textContent,
-          });
-
-          toast.dismiss('file-loading');
-        } else {
-          toast.error('Failed to load file', { id: 'file-loading' });
-        }
-      } catch (error: any) {
-        console.error('Failed to load file:', error);
-        toast.error('Failed to load file', { id: 'file-loading' });
-      } finally {
-        setIsLoadingPreview(false);
-      }
-    }
-  };
-
-  const handleDownloadFile = async (previewFile: PreviewFile) => {
-    try {
-      // Create a download link
-      const link = document.createElement('a');
-      link.href = previewFile.url;
-      link.download = previewFile.name;
-      link.target = '_blank';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      toast.success(`Downloading ${previewFile.name}`);
-    } catch (error) {
-      console.error('Download failed:', error);
-      toast.error('Download failed');
-    }
-  };
-
   const handleFileAction = async (action: string, file: FileItem) => {
     switch (action) {
       case 'rename':
@@ -415,37 +260,10 @@ export default function FilesPage() {
         toggleStar(file.id);
         break;
       case 'download':
-        if (file.storageType === 'byod' && file.telegramMessageId && user?.byodConfig?.telegramSession) {
-          // BYOD: download via Render server
-          toast.info('Starting download...');
-          try {
-            const result = await downloadBYODFile(file.telegramMessageId, user.byodConfig.telegramSession);
-            if (result.success && result.blobUrl) {
-              const link = document.createElement('a');
-              link.href = result.blobUrl;
-              link.download = file.name;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              URL.revokeObjectURL(result.blobUrl);
-              toast.success('Download complete');
-            } else {
-              toast.error(result.error || 'Download failed');
-            }
-          } catch (err) {
-            toast.error('Download failed');
-          }
-        } else if (file.telegramFileId) {
-          // Managed: download via stream proxy
-          const link = document.createElement('a');
-          link.href = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
-          link.download = file.name;
-          link.target = '_blank';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          toast.success('Download started');
-        }
+        // Delegated to the shared hook: it asks the server for
+        // `Content-Disposition: attachment` (the only thing that actually forces
+        // a save for cross-origin BYOD URLs) and cleans up any blob it created.
+        await downloadFile(file);
         break;
     }
   };
@@ -657,13 +475,13 @@ export default function FilesPage() {
                 file={file}
                 isSelected={selectedFiles.includes(file.id)}
                 onSelect={() => selectFile(file.id)}
-                onClick={() => handleFileClick(file)}
+                onClick={() => openFile(file)}
                 onStar={() => toggleStar(file.id)}
                 onDelete={() => setDeleteFile(file)}
                 onRename={() => setRenameFile(file)}
                 onShare={() => setShareFile(file)}
                 onMove={() => setMoveFile(file)}
-                onDownload={() => handleDownloadContext(file)}
+                onDownload={() => downloadFile(file)}
               />
             ))}
           </AnimatePresence>
@@ -687,13 +505,13 @@ export default function FilesPage() {
                     file={file}
                     isSelected={selectedFiles.includes(file.id)}
                     onSelect={() => selectFile(file.id)}
-                    onClick={() => handleFileClick(file)}
+                    onClick={() => openFile(file)}
                     onStar={() => toggleStar(file.id)}
                     onDelete={() => setDeleteFile(file)}
                     onRename={() => setRenameFile(file)}
                     onShare={() => setShareFile(file)}
                     onMove={() => setMoveFile(file)}
-                    onDownload={() => handleDownloadContext(file)}
+                    onDownload={() => downloadFile(file)}
                   />
                 ))}
               </AnimatePresence>
@@ -810,8 +628,8 @@ export default function FilesPage() {
       <PreviewModal
         file={previewFile}
         isOpen={!!previewFile}
-        onClose={() => setPreviewFile(null)}
-        onDownload={handleDownloadFile}
+        onClose={closePreview}
+        onDownload={downloadPreviewFile}
       />
     </div>
   );

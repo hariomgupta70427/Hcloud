@@ -118,101 +118,10 @@ export async function verifyTelegramCode(
     }
 }
 
-/**
- * Upload a file to user's Saved Messages via BYOD
- * @param file File to upload
- * @param session Telegram session string
- * @param onProgress Progress callback (0-100)
- */
-export async function uploadFileBYOD(
-    file: File,
-    session: string,
-    onProgress?: (progress: number) => void
-): Promise<TelegramUploadResult> {
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('session', session);
-        formData.append('fileName', file.name);
-
-        // Use XMLHttpRequest for progress tracking
-        return new Promise((resolve) => {
-            const xhr = new XMLHttpRequest();
-
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable && onProgress) {
-                    const progress = Math.round((e.loaded / e.total) * 100);
-                    onProgress(progress);
-                }
-            });
-
-            xhr.addEventListener('load', () => {
-                try {
-                    const data = JSON.parse(xhr.responseText);
-                    if (xhr.status === 200 && data.success) {
-                        resolve({
-                            success: true,
-                            messageId: data.messageId,
-                            fileId: data.fileId,
-                        });
-                    } else {
-                        resolve({
-                            success: false,
-                            error: data.error || 'Upload failed',
-                        });
-                    }
-                } catch {
-                    resolve({
-                        success: false,
-                        error: 'Invalid response from server',
-                    });
-                }
-            });
-
-            xhr.addEventListener('error', () => {
-                resolve({
-                    success: false,
-                    error: 'Network error during upload',
-                });
-            });
-
-            xhr.open('POST', `${API_BASE}/upload`);
-            xhr.send(formData);
-        });
-    } catch (error) {
-        console.error('Upload error:', error);
-        return {
-            success: false,
-            error: 'Failed to upload file',
-        };
-    }
-}
-
-/**
- * Download a file from user's Saved Messages via BYOD
- * @param messageId Message ID of the file
- * @param session Telegram session string
- */
-export async function downloadFileBYOD(
-    messageId: number,
-    session: string
-): Promise<Blob | null> {
-    try {
-        const response = await fetch(`${API_BASE}/download`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ messageId, session }),
-        });
-
-        if (!response.ok) {
-            return null;
-        }
-
-        return await response.blob();
-    } catch (error) {
-        console.error('Download error:', error);
-        return null;
-    }
-}
+// NOTE: uploadFileBYOD() and downloadFileBYOD() used to live here and posted to
+// /api/telegram/upload and /api/telegram/download. Both were unauthenticated
+// Vercel functions that accepted a raw full-account Telegram session in the
+// request body (with a 2GB body limit), and neither was called by any code.
+// They have been removed along with those endpoints. BYOD uploads go through
+// chunkedUploadService -> the authenticated Render server; BYOD reads go through
+// the encrypted stream token.

@@ -33,14 +33,34 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const RENDER_URL = (process.env.UPLOAD_SERVER_URL || 'https://hcloud.onrender.com').replace(/\/$/, '');
 
 // MIME lookup — drives correct in-browser playback/preview when Telegram's
-// file endpoint reports a generic application/octet-stream.
+// file endpoint reports a generic application/octet-stream. Keep in sync with
+// src/lib/fileTypes.ts and upload-server/server.ts.
 const MIME: Record<string, string> = {
+    // audio
     mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg',
-    wav: 'audio/wav', flac: 'audio/flac', opus: 'audio/opus',
-    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
-    mkv: 'video/x-matroska', avi: 'video/x-msvideo',
-    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-    gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
+    oga: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac', opus: 'audio/opus',
+    wma: 'audio/x-ms-wma', aiff: 'audio/aiff',
+    // video
+    mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    mkv: 'video/x-matroska', avi: 'video/x-msvideo', wmv: 'video/x-ms-wmv',
+    flv: 'video/x-flv', mpeg: 'video/mpeg', mpg: 'video/mpeg', '3gp': 'video/3gpp',
+    ogv: 'video/ogg',
+    // image
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+    avif: 'image/avif', heic: 'image/heic', heif: 'image/heif', tiff: 'image/tiff',
+    // documents / text
+    pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv',
+    json: 'application/json', xml: 'application/xml', css: 'text/css',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    // archives
+    zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
+    tar: 'application/x-tar', gz: 'application/gzip',
 };
 
 function guessMime(path: string): string {
@@ -50,17 +70,21 @@ function guessMime(path: string): string {
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    // HEAD must be allowed: Safari and several media players probe with HEAD
+    // before requesting any bytes, and a 405 there aborts playback entirely.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
     const fileId = req.query.fileId as string | undefined;
     const token = req.query.token as string | undefined;
-    const messageId = req.query.messageId as string | undefined;
-    const session = req.query.session as string | undefined;
+    const download = req.query.download as string | undefined;
+    const name = req.query.name as string | undefined;
 
     try {
         // ── BYOD -> hand off to the Render server (it owns gramjs) ──
@@ -68,20 +92,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             // Opaque encrypted token carries session+messageId. Safe to put in a
             // redirect URL; Render decrypts it. Preserves the Range header.
             res.setHeader('Cache-Control', 'no-store');
-            return res.redirect(302, `${RENDER_URL}/token-stream?token=${encodeURIComponent(token)}`);
+            const dl = (download === '1' || download === 'true') ? '&download=1' : '';
+            return res.redirect(302, `${RENDER_URL}/token-stream?token=${encodeURIComponent(token)}${dl}`);
         }
-        if (messageId && session) {
-            // Legacy raw-session path (kept for backwards compatibility).
-            res.setHeader('Cache-Control', 'no-store');
-            return res.redirect(
-                302,
-                `${RENDER_URL}/stream?messageId=${encodeURIComponent(messageId)}&session=${encodeURIComponent(session)}`,
-            );
-        }
+
+        // NOTE: a legacy `?messageId=&session=` path used to be accepted here and
+        // redirected to Render with the raw session in the query string. It was
+        // unauthenticated and would proxy ANY session handed to it, so it has
+        // been removed. BYOD streaming now goes exclusively through the encrypted
+        // token minted by /api/telegram/session-token.
 
         // ── Managed (Bot API) — pure fetch, no gramjs ──
         if (fileId) {
-            return await handleManaged(req, res, fileId);
+            return await handleManaged(req, res, fileId, {
+                asAttachment: download === '1' || download === 'true',
+                fileName: name,
+            });
         }
 
         return res.status(400).json({ error: 'Provide fileId or token' });
@@ -94,13 +120,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 }
 
+interface DispositionOptions {
+    asAttachment?: boolean;
+    fileName?: string;
+}
+
 // ─── Managed files: proxy the Telegram Bot API download (no gramjs) ───
-async function handleManaged(req: VercelRequest, res: VercelResponse, fileId: string) {
+async function handleManaged(
+    req: VercelRequest,
+    res: VercelResponse,
+    fileId: string,
+    disposition: DispositionOptions = {},
+) {
     if (!BOT_TOKEN) return res.status(500).json({ error: 'Bot token not configured' });
 
     // Bot API getFile only returns a file_path for files <= 20 MB; larger files
     // fail here with "file is too big" and cannot be served through the bot.
-    const infoRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
+    // fileId is user-supplied, so it must be encoded before entering the query.
+    const infoRes = await fetch(
+        `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`
+    );
     const info = await infoRes.json() as any;
     if (!info.ok || !info.result?.file_path) {
         const desc: string = info.description || '';
@@ -114,10 +153,13 @@ async function handleManaged(req: VercelRequest, res: VercelResponse, fileId: st
 
     const filePath: string = info.result.file_path;
     const fileSize: number | undefined = info.result.file_size;
-    const contentType = guessMime(filePath);
+    // Prefer the caller-supplied name: Telegram's file_path is an internal name
+    // like `documents/file_42.mp4`, which is what the user would otherwise get
+    // saved to their disk.
+    const contentType = guessMime(disposition.fileName || filePath);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 
-    return await pipeUrl(req, res, fileUrl, contentType, fileSize);
+    return await pipeUrl(req, res, fileUrl, contentType, fileSize, disposition);
 }
 
 // ─── Helper: pipe a Telegram file URL to the response (managed path) ───
@@ -132,10 +174,17 @@ async function pipeUrl(
     url: string,
     contentType: string,
     fileSize?: number,
+    disposition: DispositionOptions = {},
 ) {
     const range = req.headers.range as string | undefined;
+    const isHead = req.method === 'HEAD';
 
-    const upstream = await fetch(url, range ? { headers: { Range: range } } : undefined);
+    const upstream = await fetch(url, {
+        // For a HEAD probe we only need headers — ask for one byte rather than
+        // pulling the whole file just to throw it away.
+        method: 'GET',
+        headers: range ? { Range: range } : (isHead ? { Range: 'bytes=0-0' } : undefined) as any,
+    });
     if (!upstream.ok && upstream.status !== 206) {
         return res.status(502).json({ error: `Upstream ${upstream.status}` });
     }
@@ -145,12 +194,32 @@ async function pipeUrl(
         ? contentType
         : (upstreamType || contentType);
 
+    // The `download` attribute on an <a> is ignored cross-origin, and a media
+    // stream URL opened directly would just play. Only the server can force a
+    // save, so honour an explicit attachment request here.
+    const dispositionType = disposition.asAttachment ? 'attachment' : 'inline';
+    const contentDisposition = disposition.fileName
+        ? `${dispositionType}; filename*=UTF-8''${encodeURIComponent(disposition.fileName)}`
+        : dispositionType;
+
     const headers: Record<string, string> = {
         'Content-Type': resolvedType,
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=3600',
-        'Content-Disposition': 'inline',
+        // PRIVATE: these are a specific user's files. `public` would let any
+        // shared cache or CDN store and potentially serve them to someone else.
+        'Cache-Control': 'private, max-age=3600',
+        'Content-Disposition': contentDisposition,
     };
+
+    if (isHead) {
+        // Report the true size, not the 1-byte probe range.
+        if (fileSize) headers['Content-Length'] = fileSize.toString();
+        res.writeHead(200, headers);
+        // Discard the probe body so the socket is not left half-read.
+        try { await upstream.body?.cancel(); } catch { /* ignore */ }
+        return res.end();
+    }
+
     const contentRange = upstream.headers.get('content-range');
     if (contentRange) headers['Content-Range'] = contentRange;
     const contentLength = upstream.headers.get('content-length');

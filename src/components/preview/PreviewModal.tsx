@@ -5,6 +5,7 @@ import { AudioPreview } from './AudioPreview';
 import { PDFPreview } from './PDFPreview';
 import { CodePreview } from './CodePreview';
 import { OfficePreview } from './OfficePreview';
+import { getExtension, getFileCategory, resolveMimeType } from '@/lib/fileTypes';
 
 export type PreviewType = 'image' | 'video' | 'audio' | 'pdf' | 'office' | 'code' | 'unknown';
 
@@ -27,52 +28,40 @@ interface PreviewModalProps {
     onNavigate?: (file: PreviewFile) => void; // Callback when navigating gallery
 }
 
-// Detect file type from extension or mime type
+const OFFICE_EXTS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp']);
+
+/**
+ * Pick which preview component renders a file.
+ *
+ * Delegates media/image detection to the shared resolver in @/lib/fileTypes so
+ * that a file whose stored MIME is `application/octet-stream` (very common for
+ * .mkv/.flac/.m4v uploaded from Windows) is still previewed as video/audio
+ * instead of falling through to 'unknown'.
+ */
 export function getPreviewType(filename: string, mimeType?: string): PreviewType {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const category = getFileCategory(filename, mimeType);
+    if (category === 'image') return 'image';
+    if (category === 'video') return 'video';
+    if (category === 'audio') return 'audio';
 
-    // Image types
-    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'];
-    if (imageExts.includes(ext) || mimeType?.startsWith('image/')) {
-        return 'image';
-    }
+    const mime = resolveMimeType(filename, mimeType);
+    const ext = getExtension(filename);
 
-    // Video types
-    const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv'];
-    if (videoExts.includes(ext) || mimeType?.startsWith('video/')) {
-        return 'video';
-    }
+    if (mime === 'application/pdf') return 'pdf';
 
-    // Audio types
-    const audioExts = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'];
-    if (audioExts.includes(ext) || mimeType?.startsWith('audio/')) {
-        return 'audio';
-    }
-
-    // PDF
-    if (ext === 'pdf' || mimeType === 'application/pdf') {
-        return 'pdf';
-    }
-
-    // Office Documents
-    const officeExts = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
-    if (officeExts.includes(ext) ||
-        mimeType?.includes('msword') ||
-        mimeType?.includes('office') ||
-        mimeType?.includes('spreadsheet') ||
-        mimeType?.includes('presentation')) {
+    if (OFFICE_EXTS.has(ext) ||
+        mime.includes('msword') ||
+        mime.includes('officedocument') ||
+        mime.includes('spreadsheet') ||
+        mime.includes('presentation')) {
         return 'office';
     }
 
-    // Code/text types
-    const codeExts = [
-        'js', 'jsx', 'ts', 'tsx', 'py', 'rb', 'java', 'cpp', 'c', 'cs', 'go', 'rs',
-        'php', 'html', 'css', 'scss', 'json', 'xml', 'md', 'yaml', 'yml', 'sql',
-        'sh', 'bash', 'txt', 'log', 'env', 'gitignore', 'dockerfile'
-    ];
-    if (codeExts.includes(ext) || mimeType?.startsWith('text/')) {
-        return 'code';
-    }
+    if (category === 'code' || mime.startsWith('text/')) return 'code';
+
+    // Extension-less dotfiles and build files are still readable as text.
+    const textLikeNames = ['dockerfile', 'makefile', 'gitignore', 'env', 'license', 'readme'];
+    if (textLikeNames.includes(filename.toLowerCase().replace(/^\./, ''))) return 'code';
 
     return 'unknown';
 }

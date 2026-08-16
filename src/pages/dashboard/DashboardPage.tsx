@@ -11,6 +11,7 @@ import {
   FileText,
   Image,
   Film,
+  Music,
   ArrowRight,
   FolderPlus,
 } from 'lucide-react';
@@ -20,6 +21,7 @@ import { useUIStore } from '@/stores/uiStore';
 import { NewFolderDialog } from '@/components/file/NewFolderDialog';
 import { UploadModal } from '@/components/file/UploadModal';
 import { PreviewModal } from '@/components/preview/PreviewModal';
+import { getFileCategory } from '@/lib/fileTypes';
 import { useUpload } from '@/hooks/useUpload';
 import { useFileActions } from '@/hooks/useFileActions';
 import * as fileService from '@/services/fileService';
@@ -64,17 +66,22 @@ export default function DashboardPage() {
 
   const starredFiles = files.filter(f => f.isStarred).slice(0, 4);
 
-  // Calculate actual file type counts
+  // File-type counts. Classified by MIME *and* filename: a mime-only test
+  // undercounted every .mkv/.flac/.m4v file, since the browser reports no type
+  // for those and they were stored as application/octet-stream.
+  const countedFiles = files.filter(f => f.type === 'file');
   const fileTypeCounts = {
-    documents: files.filter(f => f.mimeType?.includes('document') || f.mimeType?.includes('pdf') || f.mimeType?.includes('text')).length,
-    images: files.filter(f => f.mimeType?.startsWith('image/')).length,
-    videos: files.filter(f => f.mimeType?.startsWith('video/')).length,
+    documents: countedFiles.filter(f => getFileCategory(f.name, f.mimeType) === 'document').length,
+    images: countedFiles.filter(f => getFileCategory(f.name, f.mimeType) === 'image').length,
+    videos: countedFiles.filter(f => getFileCategory(f.name, f.mimeType) === 'video').length,
+    audio: countedFiles.filter(f => getFileCategory(f.name, f.mimeType) === 'audio').length,
   };
 
   const fileTypes = [
     { icon: FileText, label: 'Documents', count: fileTypeCounts.documents, color: 'text-blue-500' },
     { icon: Image, label: 'Images', count: fileTypeCounts.images, color: 'text-green-500' },
     { icon: Film, label: 'Videos', count: fileTypeCounts.videos, color: 'text-purple-500' },
+    { icon: Music, label: 'Audio', count: fileTypeCounts.audio, color: 'text-pink-500' },
   ];
 
   const handleQuickAction = (action: string) => {

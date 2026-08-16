@@ -1,32 +1,61 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users can read and write their own user document
+
+    // ── Users ────────────────────────────────────────────────────────────────
+    // A user document holds byodConfig.telegramSession, which is a FULL-ACCOUNT
+    // Telegram credential. Owner-only, always.
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-    
-    // Files collection
+
+    // ── Files ────────────────────────────────────────────────────────────────
     match /files/{fileId} {
-      // Allow public read ONLY if the file is shared AND not expired.
-      // Password verification happens client-side against the SHA-256 hash,
-      // which is safe because the hash cannot be reversed to recover the password.
-      // The telegramFileId is needed for the stream proxy to serve the file.
-      allow read: if resource.data.isShared == true
-                  && (
-                    // No expiration set, or expiration is in the future
-                    resource.data.shareSettings.expiresAt == null
-                    || resource.data.shareSettings.expiresAt > request.time
-                  );
-      
-      // Allow owner to read their own files
+
+      // Public share access.
+      //
+      // IMPORTANT: this is `get`, NOT `read`.
+      //
+      // `read` covers both `get` (fetch one document by id) and `list` (run a
+      // query). The previous rule used `read`, which let an ANONYMOUS client
+      // query the whole collection with
+      //     where('isShared','==',true)
+      // and enumerate every shared file belonging to every user — names, sizes,
+      // paths, owner uids, the share password hash and the BYOD stream token —
+      // without ever having been given a link.
+      //
+      // Restricting this branch to `get` means a visitor must already know the
+      // document id, i.e. must have been given the share link. Queries now fall
+      // through to the owner-only rule below.
+      allow get: if resource.data.isShared == true
+                 && resource.data.isDeleted != true
+                 && (
+                   // No expiration set, or expiration is in the future
+                   resource.data.shareSettings.expiresAt == null
+                   || resource.data.shareSettings.expiresAt > request.time
+                 );
+
+      // Owner may both get and list their own files.
       allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      
-      // Allow authenticated users to CREATE files (they set their own userId)
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      
-      // Allow owner to UPDATE and DELETE existing files
-      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+
+      // Create: the caller must stamp the document with their own uid, and the
+      // core fields must be well-formed so a client cannot write junk that
+      // breaks listing for everyone.
+      allow create: if request.auth != null
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 512
+                    && request.resource.data.type in ['file', 'folder']
+                    && request.resource.data.isDeleted == false;
+
+      // Update / delete: owner only. The owner must also remain the owner —
+      // without this an update could hand the document to another uid.
+      allow update: if request.auth != null
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == request.auth.uid;
+
+      allow delete: if request.auth != null && resource.data.userId == request.auth.uid;
     }
   }
 }
