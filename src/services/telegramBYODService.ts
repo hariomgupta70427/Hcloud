@@ -4,6 +4,8 @@
  * Allows users to use their own Telegram account for file storage
  */
 
+import { getIdTokenHeader, isAuthError } from '@/lib/authHeader';
+
 const API_BASE = '/api/telegram';
 
 export interface TelegramAuthResult {
@@ -40,11 +42,12 @@ export async function sendTelegramCode(phone: string): Promise<TelegramAuthResul
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(await getIdTokenHeader()),
             },
             body: JSON.stringify({ phone }),
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
             return {
@@ -60,6 +63,9 @@ export async function sendTelegramCode(phone: string): Promise<TelegramAuthResul
             sessionString: data.sessionString, // Store for verify-code
         };
     } catch (error) {
+        if (isAuthError(error)) {
+            return { success: false, error: (error as Error).message };
+        }
         console.error('Send code error:', error);
         return {
             success: false,
@@ -88,11 +94,12 @@ export async function verifyTelegramCode(
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(await getIdTokenHeader()),
             },
             body: JSON.stringify({ phone, code, phoneCodeHash, sessionString, password }),
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
             return {
@@ -110,6 +117,9 @@ export async function verifyTelegramCode(
             user: data.user,
         };
     } catch (error) {
+        if (isAuthError(error)) {
+            return { success: false, error: (error as Error).message };
+        }
         console.error('Verify code error:', error);
         return {
             success: false,
@@ -123,5 +133,5 @@ export async function verifyTelegramCode(
 // Vercel functions that accepted a raw full-account Telegram session in the
 // request body (with a 2GB body limit), and neither was called by any code.
 // They have been removed along with those endpoints. BYOD uploads go through
-// chunkedUploadService -> the authenticated Render server; BYOD reads go through
+// chunkedUploadService -> the authenticated relay; BYOD reads go through
 // the encrypted stream token.

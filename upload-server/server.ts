@@ -1,7 +1,23 @@
 /**
- * HCloud Upload Server
- * Dedicated Express server for handling large file uploads to Telegram
- * Deployed on Render for unlimited timeout and persistent connections
+ * HCloud Relay Server
+ *
+ * Speaks Telegram MTProto (gramjs) on behalf of BYOD users:
+ *   • chunked uploads      -> /upload/chunk + /upload/finalize
+ *   • progressive streaming -> /token-stream  (HTTP Range, any content type)
+ *   • whole-file download   -> /download
+ *
+ * WHY A DEDICATED SERVER EXISTS
+ * gramjs cannot run on Vercel (bundling it crashes the function at cold start)
+ * and cannot run in the browser (many ISPs block direct MTProto, and it would
+ * require shipping the Telegram api_id/api_hash to the client). So MTProto lives
+ * here and nowhere else.
+ *
+ * HOST-AGNOSTIC BY DESIGN
+ * This server makes no assumptions about its hosting platform. It reads PORT and
+ * HOST from the environment, shuts down cleanly on SIGTERM, and holds no
+ * platform-specific code. It is deployed on an Oracle Cloud always-free VM
+ * behind Caddy (see deploy/oracle/), but runs unchanged anywhere that can run
+ * Node.
  */
 
 import express, { Request, Response, NextFunction } from 'express';
@@ -16,12 +32,50 @@ import bigInt from 'big-integer';
 const { StringSession } = sessions;
 
 // Environment variables
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
+// Bind to loopback by default: in the supported deployment Caddy terminates TLS
+// and proxies to us, so the Node process must not be reachable directly from the
+// internet. Set HOST=0.0.0.0 when running in a container with its own network.
+const HOST = process.env.HOST || '127.0.0.1';
 const TELEGRAM_API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
 const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || '';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
+
+// Where in-progress upload chunks are staged.
+//
+// Configurable because the deployment target matters: on an ephemeral platform
+// /tmp is wiped between deploys, but on a long-lived VM it persists — so a crash
+// mid-upload would leave chunk directories behind forever. TEMP_ROOT lets the
+// operator point this at a dedicated volume, and cleanStaleTempDirs() below
+// clears orphans on every boot.
+const TEMP_ROOT = process.env.TEMP_ROOT || path.join(os.tmpdir(), 'hcloud');
+
+/**
+ * Remove chunk directories left behind by a previous process.
+ *
+ * Only runs at startup, when by definition no upload is in flight: any directory
+ * present now belongs to a session this process knows nothing about and can
+ * never finalize.
+ */
+function cleanStaleTempDirs(): void {
+    try {
+        fs.mkdirSync(TEMP_ROOT, { recursive: true });
+        const entries = fs.readdirSync(TEMP_ROOT);
+        let removed = 0;
+        for (const entry of entries) {
+            if (!entry.startsWith('hcloud_')) continue;
+            try {
+                fs.rmSync(path.join(TEMP_ROOT, entry), { recursive: true, force: true });
+                removed++;
+            } catch { /* ignore individual failures */ }
+        }
+        if (removed > 0) console.log(`🧹 Removed ${removed} orphaned upload director${removed === 1 ? 'y' : 'ies'}`);
+    } catch (err) {
+        console.warn('⚠️  Could not prepare temp directory:', err);
+    }
+}
 
 // ============================================
 // STREAM TOKEN DECRYPTION
@@ -69,23 +123,108 @@ if (!TELEGRAM_API_ID || !TELEGRAM_API_HASH) {
 // Create Express app
 const app = express();
 
+// Caddy terminates TLS and forwards X-Forwarded-For / X-Forwarded-Proto.
+// Trusting exactly one hop makes req.ip the real client address (needed for
+// rate limiting) without letting a client spoof it by sending its own header.
+app.set('trust proxy', 1);
+// Don't advertise the framework.
+app.disable('x-powered-by');
+
 // CORS configuration
-const allowedOrigins = CORS_ORIGIN.split(',').map(o => o.trim());
+const allowedOrigins = CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean);
 app.use(cors({
     origin: (origin: string | undefined, callback: any) => {
+        // No Origin header: a same-origin navigation, a media element fetch, or a
+        // non-browser client. These are not CORS requests, so allow them — the
+        // encrypted token, not the origin, is the capability for /token-stream.
         if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-            callback(null, true);
-        } else {
-            console.warn(`Blocked CORS request from: ${origin}`);
-            callback(new Error('Not allowed by CORS'));
+            return callback(null, true);
         }
+        console.warn(`Blocked CORS request from: ${origin}`);
+        return callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
 }));
 
-// Parse JSON with high limit for chunks
+// Parse JSON with a limit sized for one base64 chunk (8MB raw -> ~10.7MB).
 app.use(express.json({ limit: '12mb' }));
+
+// ============================================
+// RATE LIMITING
+// ============================================
+// This server is reachable from the public internet, so the expensive routes
+// (each one opens a Telegram connection and moves real bytes) need a ceiling.
+// Implemented in-process with no dependency: a fixed-window counter per client
+// IP, plus a cap on how many streams one IP may hold open at once so a single
+// client cannot exhaust the connection pool.
+//
+// Defaults are deliberately generous because media players issue many Range
+// requests for a single video. Tune with RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS,
+// or disable entirely with RATE_LIMIT_DISABLED=true.
+const RATE_LIMIT_DISABLED = process.env.RATE_LIMIT_DISABLED === 'true';
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '600', 10);
+const MAX_CONCURRENT_STREAMS_PER_IP = parseInt(process.env.MAX_CONCURRENT_STREAMS_PER_IP || '8', 10);
+
+interface RateWindow { count: number; resetAt: number }
+const rateWindows = new Map<string, RateWindow>();
+const activeStreamsPerIp = new Map<string, number>();
+
+// Drop expired windows so the map cannot grow without bound.
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, w] of rateWindows.entries()) {
+        if (w.resetAt <= now) rateWindows.delete(ip);
+    }
+}, 60_000).unref();
+
+function clientIp(req: Request): string {
+    return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function rateLimit(req: Request, res: Response, next: NextFunction) {
+    if (RATE_LIMIT_DISABLED) return next();
+
+    const ip = clientIp(req);
+    const now = Date.now();
+    const win = rateWindows.get(ip);
+
+    if (!win || win.resetAt <= now) {
+        rateWindows.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return next();
+    }
+
+    win.count++;
+    if (win.count > RATE_LIMIT_MAX) {
+        const retryAfter = Math.max(1, Math.ceil((win.resetAt - now) / 1000));
+        res.setHeader('Retry-After', retryAfter.toString());
+        return res.status(429).json({ error: 'Too many requests. Please slow down.' });
+    }
+    return next();
+}
+
+/**
+ * Track concurrent streams per IP. Returns a release function, or null when the
+ * caller is already at its limit.
+ */
+function acquireStreamSlot(req: Request): (() => void) | null {
+    if (RATE_LIMIT_DISABLED) return () => { };
+
+    const ip = clientIp(req);
+    const current = activeStreamsPerIp.get(ip) || 0;
+    if (current >= MAX_CONCURRENT_STREAMS_PER_IP) return null;
+
+    activeStreamsPerIp.set(ip, current + 1);
+    let released = false;
+    return () => {
+        if (released) return; // idempotent: 'close' can fire more than once
+        released = true;
+        const n = (activeStreamsPerIp.get(ip) || 1) - 1;
+        if (n <= 0) activeStreamsPerIp.delete(ip);
+        else activeStreamsPerIp.set(ip, n);
+    };
+}
 
 // ============================================
 // FIREBASE AUTH MIDDLEWARE
@@ -200,20 +339,27 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
     next();
 }
 
-// Health check endpoint (public — no auth required).
-// Doubles as the keep-alive target: Render's free tier sleeps a service after
-// ~15 minutes without inbound traffic, and waking it costs ~50s of cold start
-// on the user's very first upload/stream. Pinging this route keeps it warm.
-app.get('/health', (_: any, res: any) => {
+// Health check (public, unauthenticated, never rate-limited).
+// Used by Caddy, Docker's HEALTHCHECK and any external uptime monitor.
+// No keep-alive ping is needed any more: unlike a sleeping free-tier dyno, the
+// Oracle Cloud VM runs continuously, so there is no cold start to hide.
+app.get('/health', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        uptime: Math.round(process.uptime()),
-        warmClients: clientCache.size,
+        uptimeSeconds: Math.round(process.uptime()),
+        warmTelegramClients: clientCache.size,
+        activeUploads: uploadSessions.size,
     });
 });
-app.head('/health', (_: any, res: any) => res.status(200).end());
+app.head('/health', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).end();
+});
+
+// Everything below /health is rate limited.
+app.use(rateLimit);
 
 // ============================================
 // TELEGRAM CLIENT CACHE
@@ -477,7 +623,7 @@ app.post('/upload/chunk', authMiddleware, async (req: Request, res: Response) =>
         // Get or create upload session
         let uploadSession = uploadSessions.get(uploadId);
         if (!uploadSession) {
-            const tempDir = path.join(os.tmpdir(), `hcloud_chunks_${uploadId}`);
+            const tempDir = path.join(TEMP_ROOT, `hcloud_chunks_${uploadId}`);
             if (!fs.existsSync(tempDir)) {
                 fs.mkdirSync(tempDir, { recursive: true });
             }
@@ -590,7 +736,7 @@ app.post('/upload/finalize', authMiddleware, async (req: Request, res: Response)
         // ~1GB of heap on a 512MB Render instance and the process was OOM-killed
         // mid-upload. Piping each chunk through and awaiting completion keeps
         // memory flat at one chunk regardless of file size.
-        const tempPath = path.join(os.tmpdir(), `hcloud_${uploadId}_${Date.now()}`);
+        const tempPath = path.join(TEMP_ROOT, `hcloud_${uploadId}_${Date.now()}`);
         const writeStream = fs.createWriteStream(tempPath);
 
         try {
@@ -1080,15 +1226,28 @@ const tokenStreamHandler = async (req: Request, res: Response) => {
         return res.status(401).json({ error: 'Invalid or expired stream token' });
     }
 
+    // Each stream holds a Telegram connection for its whole duration, so cap how
+    // many one client can hold at once. Without this a single page could open
+    // dozens of <video> elements and starve every other user of the pool.
+    const release = acquireStreamSlot(req);
+    if (!release) {
+        res.setHeader('Retry-After', '5');
+        return res.status(429).json({ error: 'Too many simultaneous streams from this client.' });
+    }
+    // 'close' fires whether the response finished or the client disconnected.
+    res.on('close', release);
+
     try {
         return await streamMedia(req, res, decoded.messageId, decoded.session);
     } catch (error: any) {
         console.error('❌ Token-stream error:', error);
-        if (!res.headersSent) return res.status(500).json({ error: error.message || 'Stream failed' });
+        if (!res.headersSent) return res.status(500).json({ error: 'Stream failed' });
         // Headers already flushed mid-stream — the only honest signal left is to
         // kill the connection so the player reports an error instead of treating
         // a truncated body as a complete file.
         return res.destroy();
+    } finally {
+        release();
     }
 };
 
@@ -1174,53 +1333,6 @@ app.get('/stats', (req: Request, res: Response) => {
 });
 
 // ============================================
-// KEEP-ALIVE (anti cold-start)
-// ============================================
-// Render's free tier suspends a service after ~15 minutes with no inbound
-// requests; the next request then pays a ~50 second cold start, which is the
-// "site feels slow" problem. A self-ping goes out to the public URL and comes
-// back in through Render's router, so it counts as real inbound traffic and
-// keeps the instance hot.
-//
-// A self-ping cannot RESURRECT a service that already slept, so also point an
-// external uptime cron (GitHub Actions / cron-job.org / UptimeRobot) at
-// GET /health every 10 minutes. Both together give a permanently warm server.
-const SELF_URL = (process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || '').replace(/\/$/, '');
-const KEEP_ALIVE_MS = 10 * 60 * 1000; // comfortably under Render's ~15 min idle window
-
-function startKeepAlive() {
-    if (!SELF_URL) {
-        console.log('ℹ️  Keep-alive disabled (no RENDER_EXTERNAL_URL / SELF_URL set)');
-        return;
-    }
-    if (process.env.DISABLE_KEEP_ALIVE === 'true') {
-        console.log('ℹ️  Keep-alive disabled via DISABLE_KEEP_ALIVE');
-        return;
-    }
-
-    console.log(`💓 Keep-alive enabled: ${SELF_URL}/health every ${KEEP_ALIVE_MS / 60000} min`);
-
-    const ping = async () => {
-        try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 15000);
-            await fetch(`${SELF_URL}/health`, {
-                method: 'HEAD',
-                signal: controller.signal,
-                headers: { 'User-Agent': 'hcloud-keepalive' },
-            });
-            clearTimeout(timer);
-        } catch {
-            // A failed ping is harmless — the next one will run on schedule.
-        }
-    };
-
-    const timer = setInterval(ping, KEEP_ALIVE_MS);
-    // Don't hold the event loop open purely for the keep-alive timer.
-    if (typeof timer.unref === 'function') timer.unref();
-}
-
-// ============================================
 // ERROR HANDLING
 // ============================================
 
@@ -1233,23 +1345,81 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // START SERVER
 // ============================================
 
-app.listen(PORT, () => {
-    console.log('');
-    console.log('🚀 ================================');
-    console.log('   HCloud Upload Server Started');
-    console.log('🚀 ================================');
-    console.log(`   Port: ${PORT}`);
-    console.log(`   CORS: ${allowedOrigins.join(', ')}`);
-    console.log(`   API: ${TELEGRAM_API_ID ? '✅' : '❌'}`);
-    console.log(`   Stream tokens: ${STREAM_TOKEN_SECRET ? '✅' : '❌ (set STREAM_TOKEN_SECRET)'}`);
-    console.log('🚀 ================================');
-    console.log('');
+// Fail fast and loudly on misconfiguration rather than 401-ing every request
+// with no explanation of why.
+if (!STREAM_TOKEN_SECRET) {
+    console.error('❌ Neither STREAM_TOKEN_SECRET nor TELEGRAM_API_HASH is set — BYOD streaming cannot work.');
+    process.exit(1);
+}
+if (!FIREBASE_PROJECT_ID) {
+    console.error('❌ FIREBASE_PROJECT_ID is not set — every authenticated request would be rejected.');
+    console.error('   Set it to your Firebase project id (the `aud` claim of the ID tokens you issue).');
+    process.exit(1);
+}
 
-    startKeepAlive();
+cleanStaleTempDirs();
+
+const server = app.listen(PORT, HOST, () => {
+    console.log('');
+    console.log('🚀 ================================');
+    console.log('   HCloud Relay Server');
+    console.log('🚀 ================================');
+    console.log(`   Listening:      http://${HOST}:${PORT}`);
+    console.log(`   CORS origins:   ${allowedOrigins.join(', ') || '(none)'}`);
+    console.log(`   Telegram API:   ${TELEGRAM_API_ID ? 'configured' : 'MISSING'}`);
+    console.log(`   Stream tokens:  configured`);
+    console.log(`   Firebase proj:  ${FIREBASE_PROJECT_ID}`);
+    console.log(`   Rate limit:     ${RATE_LIMIT_DISABLED ? 'disabled' : `${RATE_LIMIT_MAX}/${RATE_LIMIT_WINDOW_MS}ms per IP`}`);
+    console.log(`   Temp dir:       ${TEMP_ROOT}`);
+    console.log('🚀 ================================');
+    console.log('');
 });
 
-// A single unhandled rejection (e.g. a Telegram socket dying mid-download)
-// must not take the whole server down and force a cold start for every user.
+// Streaming a large file can legitimately take a long time. Node's 2-minute
+// default would cut a slow client off mid-video.
+server.requestTimeout = 0;      // no cap on a single request
+server.headersTimeout = 60_000; // but headers must arrive promptly
+server.keepAliveTimeout = 65_000;
+
+// ============================================
+// GRACEFUL SHUTDOWN
+// ============================================
+// systemd/Docker send SIGTERM on stop and restart. Draining properly means an
+// in-flight upload finishes instead of being cut off, and Telegram connections
+// are closed cleanly rather than left for the server to time out.
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${signal} received — shutting down gracefully...`);
+
+    // Stop accepting new connections; existing ones drain.
+    server.close(() => console.log('   HTTP server closed'));
+
+    // Give in-flight work a bounded window, then exit regardless.
+    const forceExit = setTimeout(() => {
+        console.warn('   Drain timed out — exiting now.');
+        process.exit(0);
+    }, 25_000);
+    forceExit.unref();
+
+    // Disconnect pooled Telegram clients.
+    await Promise.allSettled(
+        Array.from(clientCache.values()).map(c => c.client.disconnect())
+    );
+    clientCache.clear();
+    console.log('   Telegram clients disconnected');
+
+    clearTimeout(forceExit);
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+// A single unhandled rejection (e.g. a Telegram socket dying mid-download) must
+// not take the whole server down for every other user.
 process.on('unhandledRejection', (reason) => {
     console.error('⚠️  Unhandled rejection:', reason);
 });

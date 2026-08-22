@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { TelegramClient, sessions } from 'telegram';
+import { requireAuth } from '../_lib/firebaseAuth';
+import { isAllowedOrigin } from '../_lib/cors';
 const { StringSession } = sessions;
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');
@@ -12,10 +14,15 @@ const APP_VERSION = '1.0.0';
 const LANG_CODE = 'en';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    // Enable CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Restricted CORS — this endpoint causes Telegram to send an SMS/app code.
+    const origin = req.headers.origin as string | undefined;
+    if (origin && isAllowedOrigin(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
@@ -30,6 +37,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error('Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables');
         return res.status(500).json({ error: 'Server configuration error' });
     }
+
+    // AUTHENTICATION REQUIRED. Unauthenticated, this endpoint let anyone trigger
+    // Telegram login codes to any phone number in the world — an SMS-spam and
+    // phone-number-probing vector charged to this app's Telegram credentials.
+    const user = await requireAuth(req, res);
+    if (!user) return;
 
     let client: TelegramClient | null = null;
 

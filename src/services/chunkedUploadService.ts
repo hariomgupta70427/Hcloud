@@ -1,63 +1,61 @@
 /**
- * Chunked Upload & Download Service for BYOD
- * Handles uploads via Render server and downloads for BYOD files
+ * Chunked upload & download for BYOD files.
+ *
+ * All traffic goes to the HCloud relay — a small Node server that owns the
+ * Telegram MTProto client (gramjs), because gramjs can run neither on Vercel nor
+ * in the browser. See deploy/oracle/ for how the relay is hosted.
  */
 
-import { getAuth } from 'firebase/auth';
-import { getIdTokenHeader } from '@/lib/authHeader';
+import { getIdTokenHeader, isAuthError } from '@/lib/authHeader';
 
 // Chunk size: 8MB (larger = fewer HTTP requests = faster upload)
 const CHUNK_SIZE = 8 * 1024 * 1024;
 
-// Upload server URL - Render deployment
-export const UPLOAD_SERVER_URL = import.meta.env.VITE_UPLOAD_SERVER_URL || 'https://hcloud.onrender.com';
+/**
+ * Relay origin, baked in at build time from VITE_UPLOAD_SERVER_URL.
+ *
+ * Deliberately has NO hardcoded fallback host. A wrong-but-plausible default is
+ * the worst outcome here: the app would keep pointing at a decommissioned server
+ * and fail with confusing network errors. An empty value fails loudly instead,
+ * naming the variable that needs setting.
+ */
+export const UPLOAD_SERVER_URL = (import.meta.env.VITE_UPLOAD_SERVER_URL || '').replace(/\/$/, '');
+
+if (!UPLOAD_SERVER_URL) {
+    console.error(
+        '[relay] VITE_UPLOAD_SERVER_URL is not set. BYOD upload, download and ' +
+        'streaming will not work. Set it to your relay origin (e.g. ' +
+        'https://relay.yourdomain.com) and rebuild.'
+    );
+}
+
+const RELAY_NOT_CONFIGURED =
+    'File storage is not configured for this deployment. Please contact support.';
+
+/** Throws a user-facing error when the relay origin is missing. */
+function requireRelay(): string {
+    if (!UPLOAD_SERVER_URL) throw new Error(RELAY_NOT_CONFIGURED);
+    return UPLOAD_SERVER_URL;
+}
 
 const API_CHUNK = `${UPLOAD_SERVER_URL}/upload/chunk`;
 const API_FINALIZE = `${UPLOAD_SERVER_URL}/upload/finalize`;
 const API_DOWNLOAD = `${UPLOAD_SERVER_URL}/download`;
-const API_HEALTH = `${UPLOAD_SERVER_URL}/health`;
 
 /**
- * Wake the Render instance early.
+ * Get authorization headers with the Firebase ID token.
  *
- * Render's free tier suspends the service after ~15 minutes idle, and the first
- * request afterwards waits ~50 seconds for the container to boot. Firing this
- * as soon as the app loads (and again before an upload) means the boot overlaps
- * with the user browsing, so by the time they actually upload or play something
- * the server is already awake.
- *
- * Deliberately fire-and-forget: a failure here must never surface to the user
- * or block anything.
- */
-let lastWarmAt = 0;
-export function warmUploadServer(): void {
-    const now = Date.now();
-    // At most once a minute — repeated pings buy nothing.
-    if (now - lastWarmAt < 60_000) return;
-    lastWarmAt = now;
-
-    void fetch(API_HEALTH, { method: 'GET', mode: 'cors', cache: 'no-store' })
-        .catch(() => { /* server asleep or offline — the real request will retry */ });
-}
-
-/**
- * Get authorization headers with Firebase ID token
+ * Throws NotSignedInError when there is no live session. It previously returned
+ * just `{'Content-Type': ...}` in that case, so the request went out with no
+ * Authorization header and the relay answered `401 Missing or invalid
+ * Authorization header` — which then got retried four times, making an expired
+ * session look like a broken server.
  */
 async function getAuthHeaders(): Promise<Record<string, string>> {
-    const auth = getAuth();
-    const user = auth.currentUser;
-    if (!user) {
-        return { 'Content-Type': 'application/json' };
-    }
-    try {
-        const token = await user.getIdToken();
-        return {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-        };
-    } catch {
-        return { 'Content-Type': 'application/json' };
-    }
+    return {
+        'Content-Type': 'application/json',
+        ...(await getIdTokenHeader()),
+    };
 }
 
 /**
@@ -67,12 +65,12 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
  * How it works:
  *   1. Ask the Vercel /api/telegram/session-token endpoint to mint a short-lived,
  *      AES-256-GCM encrypted token that wraps { session, messageId, exp }.
- *   2. Point the media element at Render's PUBLIC /token-stream?token= route,
+ *   2. Point the media element at the relay's PUBLIC /token-stream?token= route,
  *      which decrypts the token and streams the bytes from Telegram with full
  *      HTTP Range support (so seeking in audio/video works).
  *
  * The raw Telegram session never appears in the URL, logs, or history — only
- * the opaque, expiring token does. The bytes flow browser <- Render directly
+ * the opaque, expiring token does. The bytes flow browser <- relay directly
  * (no Vercel proxy hop), so playback is as fast as the server allows.
  *
  * @param opts.forDownload Ask the server for `Content-Disposition: attachment`.
@@ -86,8 +84,7 @@ export async function getByodStreamUrl(
     opts?: { forDownload?: boolean }
 ): Promise<string | null> {
     try {
-        // Overlap the Render cold start with the token mint.
-        warmUploadServer();
+        const relay = requireRelay();
 
         const res = await fetch('/api/telegram/session-token', {
             method: 'POST',
@@ -102,7 +99,7 @@ export async function getByodStreamUrl(
         if (!data?.token) return null;
 
         const suffix = opts?.forDownload ? '&download=1' : '';
-        return `${UPLOAD_SERVER_URL}/token-stream?token=${encodeURIComponent(data.token)}${suffix}`;
+        return `${relay}/token-stream?token=${encodeURIComponent(data.token)}${suffix}`;
     } catch (err) {
         console.error('[getByodStreamUrl] Failed to mint stream token:', err);
         return null;
@@ -141,7 +138,7 @@ async function uploadChunk(
     fileName: string,
     mimeType: string,
     session: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; fatal?: boolean }> {
     try {
         const headers = await getAuthHeaders();
         const response = await fetch(API_CHUNK, {
@@ -158,16 +155,28 @@ async function uploadChunk(
             }),
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-            return { success: false, error: data.error || 'Chunk upload failed' };
+            // 401/403 will never succeed on retry — the credential is the problem,
+            // not the network. Retrying just delayed the real message by ~15s.
+            const fatal = response.status === 401 || response.status === 403;
+            return {
+                success: false,
+                fatal,
+                error: fatal
+                    ? 'Your session expired. Please sign in again and retry the upload.'
+                    : (data.error || `Chunk upload failed (${response.status})`),
+            };
         }
 
         return { success: true };
     } catch (error: any) {
+        if (isAuthError(error)) {
+            return { success: false, fatal: true, error: error.message };
+        }
         console.error(`[ChunkedUpload] Chunk ${chunkIndex} failed:`, error);
-        return { success: false, error: error.message || 'Network error' };
+        return { success: false, error: error?.message || 'Network error' };
     }
 }
 
@@ -189,10 +198,13 @@ async function finalizeUpload(
             }),
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-            return { success: false, error: data.error || 'Finalize failed' };
+            if (response.status === 401 || response.status === 403) {
+                return { success: false, error: 'Your session expired. Please sign in again and retry the upload.' };
+            }
+            return { success: false, error: data.error || `Finalize failed (${response.status})` };
         }
 
         return {
@@ -201,8 +213,11 @@ async function finalizeUpload(
             fileId: data.fileId,
         };
     } catch (error: any) {
+        if (isAuthError(error)) {
+            return { success: false, error: error.message };
+        }
         console.error('[ChunkedUpload] Finalize failed:', error);
-        return { success: false, error: error.message || 'Network error' };
+        return { success: false, error: error?.message || 'Network error' };
     }
 }
 
@@ -249,6 +264,13 @@ export async function uploadFileChunked(
     onProgress?: (progress: UploadProgress) => void,
     mimeType?: string
 ): Promise<ChunkedUploadResult> {
+    // Fail before reading or encoding a single byte if the relay is unconfigured.
+    try {
+        requireRelay();
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    }
+
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const uploadId = generateUploadId();
     const effectiveMime = mimeType || file.type || 'application/octet-stream';
@@ -265,11 +287,6 @@ export async function uploadFileChunked(
         percent: 0,
     });
 
-    // Wake the Render instance while we encode the first chunk. On the free tier
-    // a sleeping server costs ~50s of cold start, and doing it concurrently with
-    // encoding hides most of that latency.
-    warmUploadServer();
-
     // Upload each chunk sequentially
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
@@ -281,7 +298,7 @@ export async function uploadFileChunked(
         // Upload chunk with retry logic
         let attempts = 0;
         const maxAttempts = 4;
-        let result: { success: boolean; error?: string } = { success: false };
+        let result: { success: boolean; error?: string; fatal?: boolean } = { success: false };
 
         while (attempts < maxAttempts) {
             attempts++;
@@ -299,12 +316,20 @@ export async function uploadFileChunked(
                 break;
             }
 
+            // An auth failure cannot be retried into success — stop immediately
+            // and report the real cause instead of burning through backoff.
+            if (result.fatal) {
+                return { success: false, error: result.error };
+            }
+
             console.warn(`[ChunkedUpload] Chunk ${i} failed (attempt ${attempts}/${maxAttempts}): ${result.error}`);
 
             if (attempts < maxAttempts) {
-                // Exponential backoff — the first failure is usually the Render
-                // cold start, which can take ~50s to resolve.
-                await new Promise(resolve => setTimeout(resolve, 1500 * attempts * attempts));
+                // Linear backoff for genuinely transient network blips. The old
+                // quadratic delay existed to outlast a ~50s free-tier cold start;
+                // the relay is always running, so waiting that long only makes a
+                // real failure feel like a hang.
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
             }
         }
 
@@ -352,7 +377,7 @@ export async function uploadFileChunked(
 }
 
 /**
- * Download a BYOD file from the Render server
+ * Download a BYOD file through the relay
  * Returns a blob URL that can be used for preview/download
  */
 export async function downloadBYODFile(
@@ -360,6 +385,7 @@ export async function downloadBYODFile(
     session: string,
 ): Promise<{ success: boolean; blobUrl?: string; error?: string }> {
     try {
+        requireRelay();
         console.log(`[BYOD Download] Fetching message ${messageId}...`);
         const headers = await getAuthHeaders();
         const response = await fetch(API_DOWNLOAD, {

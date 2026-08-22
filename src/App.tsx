@@ -7,7 +7,6 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { useAuthStore } from "./stores/authStore";
-import { warmUploadServer } from "./services/chunkedUploadService";
 import { motion, AnimatePresence } from "framer-motion";
 import { Cloud } from "lucide-react";
 import AuthPage from "./pages/AuthPage";
@@ -89,23 +88,13 @@ function AuthSplashScreen() {
 
 // Auth initializer component
 function AuthInitializer({ children }: { children: React.ReactNode }) {
-  const { initAuth, isInitialized, user } = useAuthStore();
+  const { initAuth, isInitialized } = useAuthStore();
 
   useEffect(() => {
     // Initialize Firebase auth listener
     const unsubscribe = initAuth();
     return () => unsubscribe();
   }, [initAuth]);
-
-  // Wake the Render upload/stream server as soon as we know the signed-in user
-  // relies on it. Its free tier sleeps after ~15 min idle and takes ~50s to
-  // boot, so warming it during page load means the delay is already spent by
-  // the time the user actually uploads or plays something.
-  useEffect(() => {
-    if (user?.storageMode === 'byod') {
-      warmUploadServer();
-    }
-  }, [user?.storageMode]);
 
   // Show splash screen until auth is initialized
   return (
@@ -132,6 +121,30 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore();
   if (isAuthenticated) {
     return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+/**
+ * Guard for every signed-in route.
+ *
+ * The dashboard routes previously had NO guard: they rendered whether or not a
+ * session existed. Combined with a dead Firebase session that meant the app
+ * showed a normal-looking dashboard where every request failed —
+ * "Missing or insufficient permissions" from Firestore, 401s from the upload
+ * server — with no way back to the login screen. Redirecting here is what turns
+ * an expired session into "please sign in again" instead of a broken app.
+ *
+ * AuthInitializer holds a splash screen until `isInitialized`, so by the time
+ * this renders the auth state is settled and the redirect is not a false alarm.
+ */
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isInitialized } = useAuthStore();
+
+  if (!isInitialized) return null; // splash is still up
+
+  if (!isAuthenticated) {
+    return <Navigate to="/auth" replace />;
   }
   return <>{children}</>;
 }
@@ -171,8 +184,15 @@ const App = () => (
                 {/* Public Shared File Route */}
                 <Route path="/s/:id" element={<SharedFilePage />} />
 
-                {/* Dashboard routes */}
-                <Route path="/dashboard" element={<DashboardLayout />}>
+                {/* Dashboard routes — require a live session */}
+                <Route
+                  path="/dashboard"
+                  element={
+                    <ProtectedRoute>
+                      <DashboardLayout />
+                    </ProtectedRoute>
+                  }
+                >
                   <Route index element={<DashboardPage />} />
                   <Route path="files" element={<FilesPage />} />
                   <Route path="starred" element={<StarredPage />} />

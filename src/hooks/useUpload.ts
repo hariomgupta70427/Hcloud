@@ -84,12 +84,12 @@ export function useUpload(): UseUploadReturn {
 
         updateFile(rowId, { status: 'uploading', progress: 0 });
 
-        // BYOD users: upload via the Render server (browser -> Render -> Telegram).
+        // BYOD users: upload via the relay (browser -> relay -> Telegram).
         // A datacenter server is required because many networks (ISPs) block
-        // direct browser->Telegram MTProto connections. Render keeps a warm,
+        // direct browser->Telegram MTProto connections. The relay keeps a warm,
         // pooled Telegram client so this is fast once the server is awake.
         if (isBYOD && user?.byodConfig?.telegramSession) {
-            console.log(`[useUpload] BYOD upload via Render: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+            console.log(`[useUpload] BYOD upload via relay: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
             try {
                 const result = await uploadFileChunked(
                     file,

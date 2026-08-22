@@ -1,0 +1,72 @@
+# HCloud Relay — Caddy reverse proxy
+#
+# Caddy is used instead of nginx for one decisive reason: it obtains and renews
+# Let's Encrypt certificates automatically, with no certbot cron, no renewal
+# scripts, and no expiry outage at the 90-day mark.
+#
+# bootstrap.sh substitutes the two placeholders below:
+#   __RELAY_HOST__   e.g. relay.yourdomain.com
+#   __ADMIN_EMAIL__  used by Let's Encrypt for expiry notices
+#
+# TLS REQUIRES A DOMAIN. Let's Encrypt will not issue a certificate for a bare
+# IP address, and the browser will not stream media from an untrusted origin, so
+# a hostname pointed at this VM's public IP is mandatory — see README.md.
+
+{
+	email __ADMIN_EMAIL__
+	# Trim Caddy's own access logging to errors; the relay logs its own requests.
+	log {
+		level ERROR
+	}
+}
+
+__RELAY_HOST__ {
+	encode zstd gzip
+
+	# Security headers for relay responses. The relay serves file BYTES, not HTML,
+	# so there is no CSP here — but sniffing protection and transport security
+	# still matter.
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# Never let a relay response be framed.
+		X-Frame-Options "DENY"
+		# Don't leak the server software.
+		-Server
+	}
+
+	# Health endpoint, kept out of the access log so uptime checks don't drown it.
+	handle /health {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3001 {
+			# Streaming correctness: Caddy must not buffer the body, or the whole
+			# point of progressive streaming (first byte fast, seek cheap) is lost
+			# and memory balloons on large files.
+			flush_interval -1
+
+			# Large uploads and long video streams need generous timeouts. The
+			# read timeout is the one that matters for a slow client on a big file.
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 60s
+				read_timeout 0
+				write_timeout 0
+			}
+
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Request bodies are capped just above one base64-encoded 8MB chunk. This is a
+	# cheap first line of defence: an oversized body is rejected at the edge
+	# instead of being read into the Node process.
+	request_body {
+		max_size 13MB
+	}
+}

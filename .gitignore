@@ -49,3 +49,7 @@ firebase.json
 firebase.json
 
 .vercel
+
+# Relay deployment secrets (deploy/oracle/.env holds API keys)
+deploy/oracle/.env
+upload-server/.env

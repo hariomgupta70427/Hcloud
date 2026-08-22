@@ -1,0 +1,70 @@
+# HCloud Relay — Oracle Cloud deployment
+#
+# Runs the relay bound to LOOPBACK ONLY on the host. Caddy (installed natively by
+# bootstrap.sh) terminates TLS and proxies to it. Nothing here is reachable from
+# the internet directly, so the Node process never sees unterminated TLS or
+# unfiltered traffic.
+#
+# Usage:
+#   docker compose up -d --build
+#   docker compose logs -f
+#   docker compose down
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hcloud-relay:latest
+    container_name: hcloud-relay
+    restart: unless-stopped
+
+    # 127.0.0.1 prefix is load-bearing: without it Docker would punch through the
+    # host firewall and publish port 3001 to the world, bypassing Caddy and TLS.
+    ports:
+      - "127.0.0.1:3001:3001"
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3001
+      TEMP_ROOT: /data/tmp
+
+    volumes:
+      # Upload chunks are staged here. A named volume (not the container
+      # filesystem) so a container rebuild cannot strand an in-flight upload's
+      # data, and so disk usage is visible via `docker system df`.
+      - relay-tmp:/data/tmp
+
+    # An Ampere A1 free instance has 6-24GB RAM; the relay needs a fraction of
+    # that. Capping it means a runaway upload cannot swap the whole box — and
+    # crucially, that Caddy and sshd keep running so the VM stays reachable.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+    # Bound log growth. Without this, json-file logs grow until the 50GB
+    # always-free boot volume fills up and the VM wedges.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    # Give the graceful-shutdown handler room to drain in-flight uploads before
+    # Docker escalates to SIGKILL (default is only 10s).
+    stop_grace_period: 30s
+
+volumes:
+  relay-tmp:

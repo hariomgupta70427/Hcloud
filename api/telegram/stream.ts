@@ -14,23 +14,28 @@ import { pipeline } from 'stream/promises';
  * function at COLD START (FUNCTION_INVOCATION_FAILED) — even a bare request that
  * touches none of its code 500s, because the crash happens at module load.
  * `await import('telegram')` does NOT help: Vercel's bundler still traces and
- * includes it. This is exactly why the app runs a dedicated, always-on Render
- * server for all gramjs I/O.
+ * includes it. This is exactly why the app runs a dedicated relay server.
  *
  * So this function is deliberately gramjs-free:
  *   • Managed files  -> streamed here via plain fetch (dependency-light, robust).
- *   • BYOD files     -> 302-redirected to the Render server's token-stream
- *                       endpoint, which owns gramjs. The browser follows the
- *                       redirect transparently for <img>/<video>/<audio>/fetch,
- *                       and the opaque token is the capability (no session leak).
+ *   • BYOD files     -> 302-redirected to the relay's token-stream endpoint,
+ *                       which owns gramjs. The browser follows the redirect
+ *                       transparently for <img>/<video>/<audio>/fetch, and the
+ *                       opaque token is the capability (no session leak).
  */
 
 export const config = { maxDuration: 60 };
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
-// Render server that owns gramjs (uploads + BYOD streaming/downloads).
-const RENDER_URL = (process.env.UPLOAD_SERVER_URL || 'https://hcloud.onrender.com').replace(/\/$/, '');
+/**
+ * Relay origin that owns gramjs (uploads + BYOD streaming/downloads).
+ *
+ * No hardcoded fallback on purpose: silently redirecting every BYOD stream to a
+ * decommissioned host produced confusing failures that looked like Telegram
+ * outages. An unset value returns an explicit 503 naming the variable instead.
+ */
+const RELAY_ORIGIN = (process.env.UPLOAD_SERVER_URL || '').replace(/\/$/, '');
 
 // MIME lookup — drives correct in-browser playback/preview when Telegram's
 // file endpoint reports a generic application/octet-stream. Keep in sync with
@@ -87,17 +92,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const name = req.query.name as string | undefined;
 
     try {
-        // ── BYOD -> hand off to the Render server (it owns gramjs) ──
+        // ── BYOD -> hand off to the relay (it owns gramjs) ──
         if (token) {
+            if (!RELAY_ORIGIN) {
+                console.error('[Stream] UPLOAD_SERVER_URL is not set — cannot serve BYOD files.');
+                return res.status(503).json({
+                    error: 'File storage is not configured for this deployment.',
+                });
+            }
             // Opaque encrypted token carries session+messageId. Safe to put in a
-            // redirect URL; Render decrypts it. Preserves the Range header.
+            // redirect URL; the relay decrypts it. Preserves the Range header.
             res.setHeader('Cache-Control', 'no-store');
             const dl = (download === '1' || download === 'true') ? '&download=1' : '';
-            return res.redirect(302, `${RENDER_URL}/token-stream?token=${encodeURIComponent(token)}${dl}`);
+            return res.redirect(302, `${RELAY_ORIGIN}/token-stream?token=${encodeURIComponent(token)}${dl}`);
         }
 
         // NOTE: a legacy `?messageId=&session=` path used to be accepted here and
-        // redirected to Render with the raw session in the query string. It was
+        // redirected to the relay with the raw session in the query string. It was
         // unauthenticated and would proxy ANY session handed to it, so it has
         // been removed. BYOD streaming now goes exclusively through the encrypted
         // token minted by /api/telegram/session-token.

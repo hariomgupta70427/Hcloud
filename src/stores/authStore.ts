@@ -179,7 +179,10 @@ export const useAuthStore = create<AuthState>()(
       initAuth: () => {
         const persistedUser = get().user;
 
-        // If we have a persisted user, trust it immediately (no loading state)
+        // Show the persisted user immediately so the dashboard renders without a
+        // flash of the login screen — but treat it as UNCONFIRMED until Firebase
+        // says otherwise. `isAuthenticated` here means "the UI may render",
+        // not "we hold a valid credential".
         if (persistedUser) {
           set({ isAuthenticated: true, isLoading: false, isInitialized: true });
         } else {
@@ -188,20 +191,39 @@ export const useAuthStore = create<AuthState>()(
 
         const unsubscribe = authService.onAuthStateChange((user) => {
           if (user) {
-            // Firebase confirmed user - update with fresh data from Firestore
-            set({ user, isAuthenticated: true, isLoading: false, isInitialized: true });
-          } else {
-            // Firebase says no user - but we DON'T log out automatically!
-            // This can happen on PWA resume, multi-device, or slow IndexedDB restore.
-            // We only clear loading state if we had no persisted user.
-            if (!get().user) {
-              // No persisted user either - genuinely not logged in
-              set({ isAuthenticated: false, isLoading: false, isInitialized: true });
-            }
-            // If we DO have a persisted user, we keep them logged in.
-            // The only way to log out is the explicit logout() action.
-            set({ isLoading: false, isInitialized: true });
+            // Firebase confirmed the session — refresh with authoritative data
+            // from Firestore (this is also what restores byodConfig.telegramSession,
+            // which is deliberately not persisted to localStorage).
+            set({ user, isAuthenticated: true, isLoading: false, isInitialized: true, error: null });
+            return;
           }
+
+          // Firebase reports NO signed-in user.
+          //
+          // This case used to keep the persisted user "logged in" forever, on the
+          // theory that Firebase might just be slow to restore from IndexedDB.
+          // The result was a dashboard that looked signed in but held no
+          // credential, so every authenticated operation failed at once:
+          //   • Firestore reads/writes -> "Missing or insufficient permissions"
+          //     (rules see request.auth == null)
+          //   • Render upload/stream    -> 401 "Missing or invalid Authorization
+          //     header" (getIdToken has no currentUser to read)
+          //   • Telegram re-verification -> could not save byodConfig
+          // and no amount of retrying could fix it, because the UI never offered
+          // a way back to the login screen.
+          //
+          // onAuthStateChange fires only AFTER Firebase has finished restoring
+          // persistence, so a null here is authoritative: the session is gone.
+          // Clear it and let the router send the user to login.
+          if (get().user) {
+            console.warn('[auth] Firebase session is no longer valid — signing out locally.');
+          }
+          set({
+            user: null,
+            isAuthenticated: false,
+            isLoading: false,
+            isInitialized: true,
+          });
         });
 
         return unsubscribe;

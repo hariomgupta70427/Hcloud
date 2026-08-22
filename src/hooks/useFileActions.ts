@@ -65,7 +65,7 @@ export function useFileActions(options?: { onOpenFolder?: (file: FileItem) => vo
 
         // ── Build a direct STREAM URL for every previewable type ──
         //   • Managed → Vercel Bot-API proxy (same-origin, honours Range).
-        //   • BYOD    → Render /token-stream (gramjs lives there; honours Range).
+        //   • BYOD    → relay /token-stream (gramjs lives there; honours Range).
         //     A short-lived encrypted token carries the session, so the raw
         //     session never lands in a URL/log. This is TRUE streaming: the
         //     <video>/<audio>/<img>/pdf element fetches bytes on demand, no
