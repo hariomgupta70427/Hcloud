@@ -37,7 +37,7 @@ export function UploadModal({
                         style={{ zIndex: 99998 }}
                     />
 
-                        /* Modal Container - centered using flexbox */
+                    {/* Modal Container - centered using flexbox */}
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

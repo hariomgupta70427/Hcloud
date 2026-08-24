@@ -14,6 +14,7 @@ import {
   Menu,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
+import { useUIStore } from '@/stores/uiStore';
 import { useTheme } from '@/components/ThemeProvider';
 import MobileDrawer from './MobileDrawer';
 
@@ -21,9 +22,15 @@ export default function Header() {
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
   const { theme, setTheme } = useTheme();
+  // Search and view mode MUST come from the shared store, not local state.
+  // They were `useState` here, while every consumer read useUIStore() — so the
+  // search box filtered nothing and the grid/list toggle left `viewMode`
+  // permanently 'grid', making list view unreachable on every page.
+  const searchQuery = useUIStore((s) => s.searchQuery);
+  const setSearchQuery = useUIStore((s) => s.setSearchQuery);
+  const viewMode = useUIStore((s) => s.viewMode);
+  const setViewMode = useUIStore((s) => s.setViewMode);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);

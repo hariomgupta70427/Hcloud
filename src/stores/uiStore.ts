@@ -59,16 +59,34 @@ export const useUIStore = create<UIState>()(
   )
 );
 
-// Initialize theme on load
+// Initialize theme on load.
+// This runs at module scope, BEFORE React mounts, so anything that throws here
+// white-screens the entire app with no error boundary to catch it. A single
+// corrupt 'hcloud-ui' entry (or localStorage being unavailable in a locked-down
+// browser) used to be enough. Never let this block throw.
 if (typeof window !== 'undefined') {
-  const stored = localStorage.getItem('hcloud-ui');
-  const theme = stored ? JSON.parse(stored).state?.theme : 'dark';
-  const root = window.document.documentElement;
-  
-  if (theme === 'system') {
-    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    root.classList.add(systemTheme);
-  } else {
-    root.classList.add(theme || 'dark');
+  let theme: Theme = 'dark';
+  try {
+    const stored = localStorage.getItem('hcloud-ui');
+    if (stored) {
+      const parsed = JSON.parse(stored)?.state?.theme;
+      if (parsed === 'light' || parsed === 'dark' || parsed === 'system') {
+        theme = parsed;
+      }
+    }
+  } catch {
+    // Corrupt JSON or inaccessible storage — fall back to the default.
+  }
+
+  try {
+    const root = window.document.documentElement;
+    if (theme === 'system') {
+      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      root.classList.add(systemTheme);
+    } else {
+      root.classList.add(theme);
+    }
+  } catch {
+    // Nothing sensible to do if the DOM/matchMedia is unavailable.
   }
 }

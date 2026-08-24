@@ -620,7 +620,7 @@ export default function FilesPage() {
             parentId: f.parentId || undefined,
           }))}
           onClose={() => setMoveFile(null)}
-          onMove={(folderId) => handleMove(folderId || '')}
+          onMove={(folderId) => handleMove(folderId)}
         />
       )}
 

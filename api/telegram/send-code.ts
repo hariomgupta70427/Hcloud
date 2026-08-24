@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { TelegramClient, sessions } from 'telegram';
-import { requireAuth } from '../_lib/firebaseAuth';
-import { isAllowedOrigin } from '../_lib/cors';
+import { requireAuth } from '../_lib/firebaseAuth.js';
+import { isAllowedOrigin } from '../_lib/cors.js';
 const { StringSession } = sessions;
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0');

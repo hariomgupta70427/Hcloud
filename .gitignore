@@ -53,3 +53,4 @@ firebase.json
 # Relay deployment secrets (deploy/oracle/.env holds API keys)
 deploy/oracle/.env
 upload-server/.env
+docs/ARCHITECTURE-V3.md

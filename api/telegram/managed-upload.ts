@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
-import { requireAuth } from '../_lib/firebaseAuth';
-import { isAllowedOrigin } from '../_lib/cors';
+import { requireAuth } from '../_lib/firebaseAuth.js';
+import { isAllowedOrigin } from '../_lib/cors.js';
 
 /**
  * Server-side proxy for Telegram Bot API managed-mode uploads.

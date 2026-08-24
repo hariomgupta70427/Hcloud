@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    /* Vercel Node functions. These run as ESM at runtime because the root
+       package.json sets "type": "module" — which is why NodeNext resolution
+       matters here: it makes TypeScript enforce the explicit .js extension on
+       relative imports that Node's ESM loader requires.
+
+       Four functions shipped without those extensions and crashed at module
+       load in production (FUNCTION_INVOCATION_FAILED on every request,
+       including OPTIONS). Nothing caught it because api/ was covered by no
+       tsconfig at all: tsconfig.json has "files": [] and only references, and
+       tsconfig.app.json is scoped to "include": ["src"].
+
+       This file exists so that mistake is a compile error, not an outage. */
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}

@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getIdTokenHeader } from '@/lib/authHeader';
+import { normalizeParentId } from '@/lib/parentId';
 
 export interface FileItem {
     id: string;
@@ -72,6 +73,13 @@ export interface UploadFileData {
 // Collection reference
 const filesCollection = collection(db, 'files');
 
+/**
+ * `parentId` is `string | null`; root is null and never ''. Defined in
+ * src/lib/parentId.ts so it can be unit-tested without initialising Firebase.
+ * Re-exported here because this module is the data-access boundary.
+ */
+export { normalizeParentId };
+
 // Helper to convert Firestore doc to FileItem
 function docToFileItem(docId: string, data: any): FileItem {
     return {
@@ -83,7 +91,7 @@ function docToFileItem(docId: string, data: any): FileItem {
         telegramFileId: data.telegramFileId,
         telegramMessageId: data.telegramMessageId,
         storageType: data.storageType,
-        parentId: data.parentId,
+        parentId: normalizeParentId(data.parentId),
         userId: data.userId,
         isStarred: data.isStarred || false,
         isShared: data.isShared || false,
@@ -147,16 +155,35 @@ export async function getFilesInFolder(
     userId: string,
     folderId: string | null
 ): Promise<FileItem[]> {
-    const q = query(
-        filesCollection,
-        where('userId', '==', userId),
-        where('parentId', '==', folderId)
-    );
+    const parentId = normalizeParentId(folderId);
 
-    const snapshot = await getDocs(q);
-    // Filter out deleted items and sort
-    return snapshot.docs
-        .map((doc) => docToFileItem(doc.id, doc.data()))
+    // RECOVERY: the old move-to-root bug wrote `parentId: ''` instead of null.
+    // Those rows match neither `== null` nor any real folder id, so the files
+    // vanished from every view. Root therefore queries for both and merges, so
+    // anything already corrupted shows up again. docToFileItem() normalises the
+    // value on the way out, and the next write repairs the row for good.
+    const queries = parentId === null
+        ? [
+            query(filesCollection, where('userId', '==', userId), where('parentId', '==', null)),
+            query(filesCollection, where('userId', '==', userId), where('parentId', '==', '')),
+        ]
+        : [
+            query(filesCollection, where('userId', '==', userId), where('parentId', '==', parentId)),
+        ];
+
+    const snapshots = await Promise.all(queries.map((q) => getDocs(q)));
+
+    const seen = new Set<string>();
+    const items: FileItem[] = [];
+    for (const snapshot of snapshots) {
+        for (const d of snapshot.docs) {
+            if (seen.has(d.id)) continue;
+            seen.add(d.id);
+            items.push(docToFileItem(d.id, d.data()));
+        }
+    }
+
+    return items
         .filter((file) => !file.isDeleted)
         .sort((a, b) => {
             if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
@@ -215,10 +242,12 @@ export async function getSharedFiles(userId: string): Promise<FileItem[]> {
 }
 // Create a new folder
 export async function createFolder(data: CreateFolderData): Promise<FileItem> {
+    const parentId = normalizeParentId(data.parentId);
+
     // Build path
     let path = '/' + data.name;
-    if (data.parentId) {
-        const parentDoc = await getDoc(doc(db, 'files', data.parentId));
+    if (parentId) {
+        const parentDoc = await getDoc(doc(db, 'files', parentId));
         if (parentDoc.exists()) {
             path = parentDoc.data().path + '/' + data.name;
         }
@@ -227,7 +256,7 @@ export async function createFolder(data: CreateFolderData): Promise<FileItem> {
     const folderData = {
         name: data.name,
         type: 'folder',
-        parentId: data.parentId,
+        parentId,
         userId: data.userId,
         isStarred: false,
         isShared: false,
@@ -250,10 +279,12 @@ export async function createFolder(data: CreateFolderData): Promise<FileItem> {
 
 // Add a file record (after uploading to Telegram)
 export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
+    const parentId = normalizeParentId(data.parentId);
+
     // Build path
     let path = '/' + data.name;
-    if (data.parentId) {
-        const parentDoc = await getDoc(doc(db, 'files', data.parentId));
+    if (parentId) {
+        const parentDoc = await getDoc(doc(db, 'files', parentId));
         if (parentDoc.exists()) {
             path = parentDoc.data().path + '/' + data.name;
         }
@@ -265,7 +296,7 @@ export async function addFileRecord(data: UploadFileData): Promise<FileItem> {
         mimeType: data.mimeType,
         size: data.size,
         telegramFileId: data.telegramFileId,
-        parentId: data.parentId,
+        parentId,
         userId: data.userId,
         isStarred: false,
         isShared: false,
@@ -331,6 +362,14 @@ export async function renameItem(id: string, newName: string): Promise<void> {
 
 // Move file or folder
 export async function moveItem(id: string, targetFolderId: string | null): Promise<void> {
+    // Normalised here rather than trusted from the caller: writing `''` makes
+    // the item unreachable from every folder view. See normalizeParentId.
+    const parentId = normalizeParentId(targetFolderId);
+
+    if (parentId === id) {
+        throw new Error('A folder cannot be moved into itself');
+    }
+
     const docRef = doc(db, 'files', id);
     const fileDoc = await getDoc(docRef);
 
@@ -339,15 +378,15 @@ export async function moveItem(id: string, targetFolderId: string | null): Promi
     }
 
     let newPath = '/' + fileDoc.data().name;
-    if (targetFolderId) {
-        const targetDoc = await getDoc(doc(db, 'files', targetFolderId));
+    if (parentId) {
+        const targetDoc = await getDoc(doc(db, 'files', parentId));
         if (targetDoc.exists()) {
             newPath = targetDoc.data().path + '/' + fileDoc.data().name;
         }
     }
 
     await updateDoc(docRef, {
-        parentId: targetFolderId,
+        parentId,
         path: newPath,
         updatedAt: serverTimestamp(),
     });
