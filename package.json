@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck:api": "tsc -p api --noEmit",
-    "build": "npm run typecheck:api && vite build",
+    "check:secrets": "node scripts/check-bundle-secrets.mjs dist",
+    "build": "npm run typecheck:api && vite build && npm run check:secrets",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
