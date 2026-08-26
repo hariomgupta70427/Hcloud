@@ -12,30 +12,28 @@ service cloud.firestore {
     // ── Files ────────────────────────────────────────────────────────────────
     match /files/{fileId} {
 
-      // Public share access.
+      // NO ANONYMOUS ACCESS. This is deliberate and it is a security fix.
       //
-      // IMPORTANT: this is `get`, NOT `read`.
+      // There used to be an `allow get` branch here for public share links,
+      // gated on `isShared == true`. It could not be made safe, because
+      // Firestore rules authorise whole documents — they cannot restrict which
+      // FIELDS come back. So any visitor holding a share link received the
+      // entire document, including:
+      //   • shareSettings.streamToken   — a capability valid up to 7 days
+      //   • shareSettings.passwordVerifier / passwordSalt
+      // Reading the doc directly therefore yielded the stream token, and the
+      // password gate in SharedFilePage (which ran client-side only) could be
+      // skipped outright. Narrowing `read` to `get` fixed enumeration but never
+      // fixed this.
       //
-      // `read` covers both `get` (fetch one document by id) and `list` (run a
-      // query). The previous rule used `read`, which let an ANONYMOUS client
-      // query the whole collection with
-      //     where('isShared','==',true)
-      // and enumerate every shared file belonging to every user — names, sizes,
-      // paths, owner uids, the share password hash and the BYOD stream token —
-      // without ever having been given a link.
+      // Public sharing no longer touches Firestore. A share link now carries a
+      // self-contained AES-256-GCM capability blob, decrypted only by the API
+      // (api/telegram/share-resolve.ts), which verifies the password
+      // server-side before it will return anything streamable. No secret lives
+      // in a client-readable document any more.
       //
-      // Restricting this branch to `get` means a visitor must already know the
-      // document id, i.e. must have been given the share link. Queries now fall
-      // through to the owner-only rule below.
-      allow get: if resource.data.isShared == true
-                 && resource.data.isDeleted != true
-                 && (
-                   // No expiration set, or expiration is in the future
-                   resource.data.shareSettings.expiresAt == null
-                   || resource.data.shareSettings.expiresAt > request.time
-                 );
-
-      // Owner may both get and list their own files.
+      // Consequence to preserve: an unauthenticated read of /files/{id} MUST be
+      // denied. That is Stage 1's gate artifact.
       allow read: if request.auth != null && resource.data.userId == request.auth.uid;
 
       // Create: the caller must stamp the document with their own uid, and the
