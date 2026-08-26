@@ -1,6 +1,7 @@
 # HCloud — Architecture V3
 
-**Status:** architecture locked by owner decision, 2026-08-24. Supersedes `ARCHITECTURE-V2.md` (deleted).
+**Status:** architecture locked by owner decision, 2026-08-24. This document is the single source
+of truth for HCloud's architecture.
 **Measurements in §2 were taken live on 2026-08-24 and remain valid.**
 
 Sections marked 🔒 are **irreversible once users hold data**. Do not change them without a
@@ -469,8 +470,25 @@ initialises Firebase Auth at module scope and throws without credentials).
 **Recovery bonus:** `getFilesInFolder` now queries root for both `null` and `''` and merges, so
 files already lost to the old move-to-root bug reappear and are repaired on next write.
 
-**Deploy proof still required** (§11): re-probe all five endpoints on Vercel and record
-`OPTIONS → 200` and unauthenticated `POST → 401` (not 500).
+**Deploy proof — CAPTURED 2026-08-25, production `https://hcloud-pi.vercel.app`.**
+Stage 0 is on `main` and deployed. All five endpoints answer `OPTIONS` with 200, and the four
+authenticated ones now return **401 instead of `500 FUNCTION_INVOCATION_FAILED`** on an
+unauthenticated POST:
+
+```
+ENDPOINT               OPTIONS  POST-noauth VERDICT
+stream                 200      405      OK      <- 405 is correct; GET/HEAD/OPTIONS only
+session-token          200      401      OK
+managed-upload         200      401      OK
+send-code              200      401      OK
+verify-code            200      401      OK
+```
+
+This closes the Stage 0 gate. Before the fix, every one of the four returned a hard 500 at module
+load, including on `OPTIONS`.
+
+**Still outstanding for Stage 0:** a managed upload and a Range stream against production, which
+are blocked on the rotated bot token reaching Vercel (§R8). Those transcripts get appended here.
 
 ### Stage 1 — Data-loss and security (existing bot path)
 Per-page state slices (kills the Trash-deletes-a-live-file window); the single destructive-op
