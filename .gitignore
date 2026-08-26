@@ -25,32 +25,37 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-src/lib/firebase.ts
-src/services/telegramService.ts
 
 # Environment files - NEVER COMMIT THESE
 .env
 .env.local
 .env.*.local
 
+# Relay deployment secrets (deploy/oracle/.env holds API keys)
+deploy/oracle/.env
+upload-server/.env
+
 # Vercel
 .vercel
 
-# Sensitive source files (if they contain hardcoded credentials)
-# Remove these lines once credentials are properly moved to env vars
-# src/lib/firebase.ts
-# src/services/telegramService.ts
-PRD.md
+# Claude Code: settings.json IS committed (project policy, e.g. attribution).
+# settings.local.json is personal and must not be.
+.claude/settings.local.json
+
+# Local-only docs
 PRD.md
 DEPLOY.md
 firebase.json
 firestore.indexes.json
-firebase.json
-firebase.json
 
-.vercel
-
-# Relay deployment secrets (deploy/oracle/.env holds API keys)
-deploy/oracle/.env
-upload-server/.env
-docs/ARCHITECTURE-V3.md
+# NOTE — src/lib/firebase.ts and src/services/telegramService.ts were listed here
+# to "protect hardcoded credentials". That never worked: both files were already
+# TRACKED, and .gitignore has no effect on a tracked file. The bot token in
+# telegramService.ts was committed in b8c9ad4 and stayed public regardless.
+# The real protections are: no secret in anything under src/, and
+# `npm run check:secrets` (scripts/check-bundle-secrets.mjs) failing the build if
+# one reaches dist/. Do not re-add source files here — it hides nothing and
+# creates false confidence.
+#
+# docs/ARCHITECTURE-V3.md was also ignored here. It is the architecture source of
+# truth and MUST be committed, so that entry is gone too.
