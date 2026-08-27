@@ -17,6 +17,7 @@ import {
 import { db } from '@/lib/firebase';
 import { getIdTokenHeader } from '@/lib/authHeader';
 import { normalizeParentId } from '@/lib/parentId';
+import { destructiveFunnel } from '@/lib/destructiveOps';
 
 export interface FileItem {
     id: string;
@@ -578,6 +579,39 @@ export async function moveToTrash(id: string): Promise<void> {
     });
 }
 
+/**
+ * SOFT delete, through the single funnel. The Telegram message is KEPT, so this
+ * is fully reversible and the undo simply clears the flag.
+ *
+ * Use this everywhere a user "deletes" something. `deleteItem` below is a hard
+ * Firestore removal that bypasses trash and must not be called from UI code.
+ */
+export function trashItem(id: string) {
+    return destructiveFunnel.request({
+        kind: 'trash',
+        itemIds: [id],
+        commit: () => moveToTrash(id),
+        rollback: () => restoreFromTrash(id),
+    });
+}
+
+/**
+ * HARD delete, through the single funnel. Irreversible, so the funnel defers the
+ * actual work until the undo window elapses — undo cancels it outright rather
+ * than trying to reverse it.
+ *
+ * FOLLOW-UP (recorded in ARCHITECTURE-V3): this removes the index record but not
+ * yet the Telegram message, because telegramService.deleteFromTelegram is a
+ * hardcoded no-op. Until that lands, "hard delete" reclaims no Telegram storage.
+ */
+export function purgeItem(id: string) {
+    return destructiveFunnel.request({
+        kind: 'purge',
+        itemIds: [id],
+        commit: () => deleteItem(id),
+    });
+}
+
 // Restore from trash
 export async function restoreFromTrash(id: string): Promise<void> {
     await updateDoc(doc(db, 'files', id), {
@@ -666,28 +700,23 @@ export async function emptyTrash(userId: string): Promise<void> {
     );
 
     const snapshot = await getDocs(q);
-    const batch = writeBatch(db);
 
-    // Process in chunks of 500 (Firestore batch limit)
-    // Note: Recursive delete for folders in trash is complex in batch.
-    // For simplicity, we delete the docs found. 
-    // Ideally, we should recursively delete sub-items of folders in trash.
-    // Given the prompt "make it complete", let's just delete the docs. 
-    // If a folder is in trash, its children might NOT be in trash explicitly if they were moved with folder.
-    // But softDelete usually moves folder. 
-    // We will iterate and use deleteItem for robustness or batch verify.
-    // Batch is faster. Let's use batch for now.
-
+    // A WriteBatch CANNOT be reused after commit() — Firestore throws
+    // "A write batch can no longer be used after commit()". The previous version
+    // committed at 400 and then kept adding to the same object, so emptying a
+    // trash with more than 400 items always failed partway through, leaving the
+    // trash half-cleared with no error the user could act on.
+    const BATCH_LIMIT = 400; // margin under Firestore's 500-op ceiling
+    let batch = writeBatch(db);
     let count = 0;
-    for (const doc of snapshot.docs) {
-        batch.delete(doc.ref);
+
+    for (const d of snapshot.docs) {
+        batch.delete(d.ref);
         count++;
-        if (count >= 400) { // Safety margin
+        if (count >= BATCH_LIMIT) {
             await batch.commit();
+            batch = writeBatch(db); // fresh batch, not the committed one
             count = 0;
-            // new batch? Firestore JS updates batch in place? No, need new batch object if committed?
-            // Actually reusing logic: simple loop is safer if batch limits are complex to manage here.
-            // But let's assume valid < 500 for now or Commit and create new batch.
         }
     }
 
