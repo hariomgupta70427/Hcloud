@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Share2, Link, Copy, Check, Lock, Globe, Calendar, ExternalLink } from 'lucide-react';
+import { X, Share2, Link, Copy, Check, Lock, Globe, Calendar, ExternalLink, AlertCircle } from 'lucide-react';
 
 interface ShareDialogProps {
     isOpen: boolean;
@@ -28,16 +28,23 @@ export function ShareDialog({
     const [useExpiry, setUseExpiry] = useState(false);
     const [expiryDays, setExpiryDays] = useState(7);
     const [isCreating, setIsCreating] = useState(false);
+    // Surfaced in the dialog rather than only in the console. This used to be a
+    // try/finally with no catch, while shareFile deliberately throws — so a
+    // failure reset the button, logged an unhandled rejection, and told the user
+    // nothing at all.
+    const [shareError, setShareError] = useState<string | null>(null);
 
     useEffect(() => {
         if (isOpen) {
             setShareLink(existingLink || '');
             setCopied(false);
+            setShareError(null);
         }
     }, [isOpen, existingLink]);
 
     const handleCreateLink = async () => {
         setIsCreating(true);
+        setShareError(null);
         try {
             const expiresAt = useExpiry
                 ? new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000)
@@ -47,6 +54,12 @@ export function ShareDialog({
                 expiresAt,
             });
             setShareLink(link);
+        } catch (err) {
+            setShareError(
+                err instanceof Error
+                    ? err.message
+                    : 'Could not create a share link. Please try again.'
+            );
         } finally {
             setIsCreating(false);
         }
@@ -185,6 +198,21 @@ export function ShareDialog({
                                             </select>
                                         )}
                                     </div>
+
+                                    {/* Failure notice. Account-mode files have no
+                                        public web path at all (ARCHITECTURE-V3 R4),
+                                        so this is the copy that points at the
+                                        Telegram route instead of leaving the user
+                                        pressing a button that cannot work. */}
+                                    {shareError && (
+                                        <div
+                                            role="alert"
+                                            className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/30"
+                                        >
+                                            <AlertCircle size={16} className="text-destructive mt-0.5 shrink-0" />
+                                            <p className="text-sm text-destructive">{shareError}</p>
+                                        </div>
+                                    )}
 
                                     {/* Create button */}
                                     <button

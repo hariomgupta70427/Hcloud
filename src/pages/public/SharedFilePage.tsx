@@ -1,35 +1,17 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Download, FileText, FileCode, File as FileIcon, Image as ImageIcon,
     Film, Music, AlertCircle, Loader2, Shield, Cloud, CloudOff, ExternalLink,
 } from 'lucide-react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { FileItem, derivePasswordVerifier } from '@/services/fileService';
 import { getPreviewType, PreviewType } from '@/components/preview/PreviewModal';
 import { toast } from 'sonner';
 
-// Bot API getFile only exposes a file_path for files <= 20MB. Larger managed
-// files simply cannot be streamed/downloaded through the managed proxy.
-const MANAGED_LIMIT = 20 * 1024 * 1024;
-
-/**
- * Constant-time comparison of two hex strings.
- *
- * `a === b` on a secret short-circuits at the first differing character, which
- * leaks how many leading characters matched and lets an attacker recover the
- * value one character at a time. Comparing every character keeps the timing flat.
- */
-function timingSafeEqualHex(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) {
-        diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    }
-    return diff === 0;
-}
+// This page holds no Firebase import at all any more. It used to read the file's
+// Firestore document directly, which is what leaked the stream token and the
+// password verifier to every visitor. All data now comes from
+// /api/telegram/share-resolve, which enforces the password server-side.
 
 const TYPE_META: Record<PreviewType, { icon: typeof FileIcon; label: string }> = {
     image: { icon: ImageIcon, label: 'Image' },
@@ -50,130 +32,121 @@ function formatSize(bytes?: number): string {
 
 type MediaState = 'loading' | 'ready' | 'error';
 
+/** What /api/telegram/share-resolve returns. */
+interface ResolvedShare {
+    name: string;
+    size: number;
+    mimeType: string;
+    requiresPassword: boolean;
+    expiresAt: number;
+    streamUrl?: string;
+    downloadUrl?: string;
+}
+
 export default function SharedFilePage() {
-    const { id } = useParams<{ id: string }>();
-    const [file, setFile] = useState<FileItem | null>(null);
+    const [share, setShare] = useState<ResolvedShare | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [downloading, setDownloading] = useState(false);
 
-    // Password state
+    // Password state. There is no verifier or salt here any more: the password is
+    // checked SERVER-SIDE by share-resolve, which returns nothing streamable until
+    // it passes. Previously the verifier and the stream token both arrived in the
+    // browser from a publicly readable Firestore document, so the gate could be
+    // skipped entirely.
     const [password, setPassword] = useState('');
     const [isLocked, setIsLocked] = useState(false);
     const [isCheckingPassword, setIsCheckingPassword] = useState(false);
-    // Salted PBKDF2 verifier (current scheme) and its salt.
-    const [passwordSalt, setPasswordSalt] = useState<string | null>(null);
-    const [passwordVerifier, setPasswordVerifier] = useState<string | null>(null);
-    // Legacy unsalted SHA-256 hash, for shares created before the change.
-    const [legacyPasswordHash, setLegacyPasswordHash] = useState<string | null>(null);
 
     // Preview state
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [mediaState, setMediaState] = useState<MediaState>('loading');
 
+    /**
+     * The capability lives in the URL fragment. A fragment is never transmitted
+     * to a server, so it stays out of access logs and Referer headers — which
+     * matters, because the fragment IS the credential.
+     */
+    const blob = typeof window !== 'undefined' ? window.location.hash.replace(/^#/, '') : '';
+
+    /** Single path to the server for both the initial open and the password retry. */
+    const resolve = async (pw?: string): Promise<ResolvedShare | null> => {
+        const res = await fetch('/api/telegram/share-resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ blob, password: pw }),
+        });
+        const body = await res.json().catch(() => null);
+
+        if (res.status === 401) {
+            // Locked, or the supplied password was wrong. The response still
+            // carries display metadata but nothing streamable.
+            if (body) setShare(body as ResolvedShare);
+            setIsLocked(true);
+            if (pw) toast.error(body?.error || 'Incorrect password');
+            return null;
+        }
+        if (!res.ok) {
+            setError(body?.error || 'This share link is invalid or has expired.');
+            return null;
+        }
+
+        setIsLocked(false);
+        setShare(body as ResolvedShare);
+        return body as ResolvedShare;
+    };
+
     useEffect(() => {
-        const fetchFile = async () => {
-            if (!id) return;
+        const open = async () => {
+            if (!blob) {
+                // An old-style link (/s/:id with no fragment) cannot be resolved:
+                // the capability is the fragment, and share documents are no
+                // longer publicly readable.
+                setError('This share link is missing its access key. Ask the owner to re-share the file.');
+                setLoading(false);
+                return;
+            }
             try {
-                const snapshot = await getDoc(doc(db, 'files', id));
-
-                if (!snapshot.exists()) {
-                    setError('File not found or access denied');
-                    return;
-                }
-
-                const data = snapshot.data();
-
-                if (!data.isShared) {
-                    setError('This file is not shared publicly.');
-                    return;
-                }
-
-                if (data.shareSettings?.expiresAt) {
-                    const expires = data.shareSettings.expiresAt.toDate();
-                    if (new Date() > expires) {
-                        setError('This share link has expired.');
-                        return;
-                    }
-                }
-
-                const fileData = { id: snapshot.id, ...data } as FileItem;
-                setFile(fileData);
-
-                const share = data.shareSettings ?? {};
-                if (share.passwordVerifier && share.passwordSalt) {
-                    setPasswordVerifier(share.passwordVerifier);
-                    setPasswordSalt(share.passwordSalt);
-                    setIsLocked(true);
-                } else if (share.password) {
-                    // Legacy share: unsalted SHA-256. Still honoured so existing
-                    // links keep working; re-sharing upgrades it to PBKDF2.
-                    setLegacyPasswordHash(share.password);
-                    setIsLocked(true);
-                } else {
-                    loadPreviewUrl(fileData);
-                }
+                const resolved = await resolve();
+                if (resolved) applyPreview(resolved);
             } catch (err) {
-                console.error(err);
-                setError('Error loading file. You may need permission.');
+                console.error('Failed to resolve share:', err);
+                setError('Could not open this share. Please try again.');
             } finally {
                 setLoading(false);
             }
         };
+        open();
+        // Resolving depends only on the fragment, which does not change in-place.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [blob]);
 
-        fetchFile();
-    }, [id]);
-
-    // Build the stream URL for previewable types. Managed files stream by
-    // fileId; BYOD files stream via the encrypted token minted at share time
-    // (the public page has no owner session, so the token carries everything
-    // the stream endpoint needs).
-    const loadPreviewUrl = (fileData: FileItem) => {
-        if (!fileData.telegramFileId) return;
+    /**
+     * Use the stream URL the server returned. The page no longer builds URLs
+     * itself, because doing so required knowing the Telegram handle — which is
+     * exactly what an unauthorised visitor must not receive.
+     */
+    const applyPreview = (resolved: ResolvedShare) => {
+        if (!resolved.streamUrl) return;
 
         const previewable: PreviewType[] = ['image', 'video', 'audio', 'pdf'];
-        const type = getPreviewType(fileData.name, fileData.mimeType);
+        const type = getPreviewType(resolved.name, resolved.mimeType);
         if (!previewable.includes(type)) return;
 
-        if (fileData.storageType === 'byod') {
-            const token = fileData.shareSettings?.streamToken;
-            if (!token) return; // no token -> fallback card
-            setMediaState('loading');
-            setPreviewUrl(`/api/telegram/stream?token=${encodeURIComponent(token)}`);
-            return;
-        }
-
-        // Managed: Bot API can only serve files <= 20MB.
-        if ((fileData.size ?? 0) > MANAGED_LIMIT) return;
         setMediaState('loading');
-        setPreviewUrl(`/api/telegram/stream?fileId=${encodeURIComponent(fileData.telegramFileId)}`);
+        setPreviewUrl(resolved.streamUrl);
     };
 
     const handleDownload = () => {
-        if (!file?.telegramFileId) return;
-
-        let url: string;
-        if (file.storageType === 'byod') {
-            const token = file.shareSettings?.streamToken;
-            if (!token) {
-                toast.error('The owner shared this before preview links were supported. Ask them to re-share it.');
-                return;
-            }
-            url = `/api/telegram/stream?token=${encodeURIComponent(token)}`;
-        } else {
-            if ((file.size ?? 0) > MANAGED_LIMIT) {
-                toast.error('Files larger than 20MB can’t be served through the managed bot.');
-                return;
-            }
-            url = `/api/telegram/stream?fileId=${encodeURIComponent(file.telegramFileId)}`;
+        if (!share?.downloadUrl) {
+            toast.error('This file is not available for download.');
+            return;
         }
-
         setDownloading(true);
         try {
             const link = document.createElement('a');
-            link.href = url;
-            link.download = file.name;
-            link.target = '_blank';
+            link.href = share.downloadUrl;
+            link.download = share.name;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -189,30 +162,8 @@ export default function SharedFilePage() {
         if (!password) return;
         setIsCheckingPassword(true);
         try {
-            let ok = false;
-
-            if (passwordVerifier && passwordSalt) {
-                // Current scheme: salted PBKDF2-SHA256.
-                const candidate = await derivePasswordVerifier(password, passwordSalt);
-                ok = timingSafeEqualHex(candidate, passwordVerifier);
-            } else if (legacyPasswordHash) {
-                // Legacy scheme: unsalted SHA-256.
-                const digest = await crypto.subtle.digest(
-                    'SHA-256',
-                    new TextEncoder().encode(password)
-                );
-                const hex = Array.from(new Uint8Array(digest))
-                    .map((b) => b.toString(16).padStart(2, '0'))
-                    .join('');
-                ok = timingSafeEqualHex(hex, legacyPasswordHash);
-            }
-
-            if (ok) {
-                setIsLocked(false);
-                if (file) loadPreviewUrl(file);
-            } else {
-                toast.error('Incorrect password');
-            }
+            const resolved = await resolve(password);
+            if (resolved) applyPreview(resolved);
         } catch (err) {
             console.error('Password verification failed:', err);
             toast.error('Verification failed. Please try again.');
@@ -220,6 +171,7 @@ export default function SharedFilePage() {
             setIsCheckingPassword(false);
         }
     };
+
 
     if (loading) {
         return (
@@ -285,13 +237,12 @@ export default function SharedFilePage() {
         );
     }
 
-    const previewType: PreviewType = file ? getPreviewType(file.name, file.mimeType) : 'unknown';
+    const previewType: PreviewType = share ? getPreviewType(share.name, share.mimeType) : 'unknown';
     const TypeIcon = TYPE_META[previewType].icon;
-    const isByod = file?.storageType === 'byod';
-    const hasByodToken = isByod && !!file?.shareSettings?.streamToken;
-    const tooLarge = !isByod && (file?.size ?? 0) > MANAGED_LIMIT;
-    // BYOD is downloadable only when the owner shared it WITH a stream token.
-    const downloadAvailable = !!file?.telegramFileId && !tooLarge && (!isByod || hasByodToken);
+    // The server decides what is servable and simply omits the URLs when it is
+    // not. The page no longer re-derives that from storage type or size, which is
+    // what let the two disagree.
+    const downloadAvailable = !!share?.downloadUrl;
 
     // A tasteful, self-explaining fallback card used whenever inline preview
     // isn't possible (unsupported type, BYOD, oversized, or a media error).
@@ -320,26 +271,17 @@ export default function SharedFilePage() {
     );
 
     const renderPreview = () => {
-        if (!file) return null;
+        if (!share) return null;
 
-        // BYOD is viewable ONLY when the owner shared it with a stream token.
-        // Without one (legacy shares), fall back to the owner-only notice.
-        if (isByod && !hasByodToken) {
+        // Not servable: the resolver returned metadata but no stream URL. That
+        // covers account-mode files (no public web path — see ARCHITECTURE-V3 R4)
+        // and managed files over the 20 MiB Bot API ceiling.
+        if (!share.streamUrl) {
             return (
                 <FallbackCard
                     icon={CloudOff}
                     title="Preview not available"
-                    subtitle="The owner shared this before preview links were supported. Ask them to re-share it to enable preview and download."
-                />
-            );
-        }
-
-        if (tooLarge) {
-            return (
-                <FallbackCard
-                    icon={AlertCircle}
-                    title="File too large to stream"
-                    subtitle="Files over 20MB can’t be served through the managed bot and aren’t available on public links."
+                    subtitle="This file can't be previewed on a public link. Ask the owner to share it through Telegram instead."
                 />
             );
         }
@@ -374,7 +316,7 @@ export default function SharedFilePage() {
                 {previewType === 'image' && (
                     <img
                         src={previewUrl}
-                        alt={file.name}
+                        alt={share.name}
                         className="w-full max-h-[600px] object-contain bg-black/[0.02]"
                         onLoad={() => setMediaState('ready')}
                         onError={() => setMediaState('error')}
@@ -412,7 +354,7 @@ export default function SharedFilePage() {
                 {previewType === 'pdf' && (
                     <iframe
                         src={previewUrl}
-                        title={file.name}
+                        title={share.name}
                         className="w-full h-[75vh] bg-white"
                         onLoad={() => setMediaState('ready')}
                     />
@@ -448,11 +390,11 @@ export default function SharedFilePage() {
                             <TypeIcon className="w-7 h-7 text-primary" />
                         </div>
                         <div className="min-w-0 flex-1">
-                            <h1 className="text-lg sm:text-xl font-bold text-foreground truncate" title={file?.name}>
-                                {file?.name}
+                            <h1 className="text-lg sm:text-xl font-bold text-foreground truncate" title={share?.name}>
+                                {share?.name}
                             </h1>
                             <p className="text-sm text-muted-foreground mt-0.5">
-                                {TYPE_META[previewType].label} &middot; {formatSize(file?.size)} &middot; Shared via HCloud
+                                {TYPE_META[previewType].label} &middot; {formatSize(share?.size)} &middot; Shared via HCloud
                             </p>
                         </div>
                         <button

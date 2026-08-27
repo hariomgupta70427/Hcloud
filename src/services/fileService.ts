@@ -413,109 +413,123 @@ export async function toggleStar(id: string): Promise<boolean> {
 
 // ── Share password hashing ───────────────────────────────────────────────────
 //
-// Passwords are verified with PBKDF2-SHA256 over a random per-share salt.
+// Intentionally EMPTY. Share passwords are hashed and verified server-side in
+// api/_lib/shareToken.ts (scrypt + per-share salt + timingSafeEqual).
 //
-// The previous scheme stored a bare, UNSALTED SHA-256 of the password. SHA-256
-// is designed to be fast, so an unsalted digest of a human-chosen password falls
-// to a rainbow table or a trivial offline brute force. Because share documents
-// are readable by anyone holding the link (see the SECURITY note on shareFile),
-// that meant a leaked link also leaked a recoverable password — which users
-// commonly reuse elsewhere. 210k PBKDF2 iterations makes that attack expensive.
-const PBKDF2_ITERATIONS = 210_000;
+// A browser-side verifier was worse than useless here: the verifier and salt
+// were written into a Firestore document that anonymous callers could read, so
+// the password was grindable offline AND unnecessary to bypass — the same
+// document also carried the stream token. Do not reintroduce client-side
+// password crypto for shares.
 
-function toHex(buffer: ArrayBuffer): string {
-    return Array.from(new Uint8Array(buffer))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
+/**
+ * Thrown when a file has no public web share path at all, as opposed to a
+ * transient failure. Callers surface the message directly instead of offering a
+ * retry that can never succeed.
+ */
+export class ShareNotAvailableError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ShareNotAvailableError';
+    }
 }
 
-/** Derive the stored verifier for a password + salt. */
-export async function derivePasswordVerifier(password: string, saltHex: string): Promise<string> {
-    const salt = Uint8Array.from(
-        saltHex.match(/.{2}/g)!.map((byte) => parseInt(byte, 16))
-    );
-    const keyMaterial = await crypto.subtle.importKey(
-        'raw',
-        new TextEncoder().encode(password),
-        'PBKDF2',
-        false,
-        ['deriveBits']
-    );
-    const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
-        keyMaterial,
-        256
-    );
-    return toHex(bits);
-}
-
-// Share file
+/**
+ * Create a public share link.
+ *
+ * The link carries an opaque server-encrypted capability; Firestore stores NO
+ * secret. Previously this function hashed the password in the browser and wrote
+ * the verifier, the salt and a 7-day `streamToken` into the file document — which
+ * anonymous callers could read, because Firestore rules cannot restrict which
+ * fields a document read returns. Reading the doc yielded the token and made the
+ * password gate pointless.
+ *
+ * Now: the server mints the capability and hashes the password, and the document
+ * records only that the file is shared and when the link expires.
+ *
+ * Throws with actionable copy rather than returning a link that cannot serve the
+ * file. Account-mode (BYOD) files have no public web path at all — see
+ * ARCHITECTURE-V3 R4 — and are refused here.
+ */
 export async function shareFile(
     id: string,
     settings: { password?: string; expiresAt?: Date },
-    // For BYOD files the public page has no owner session, so at share time
-    // (owner is authenticated) we mint a long-lived, encrypted stream token and
-    // store it. The raw session is NEVER written to Firestore — only the opaque
-    // token, which the stream endpoint can decrypt server-side.
-    byod?: { session: string; messageId: number }
+    file?: {
+        name: string;
+        size?: number;
+        mimeType?: string;
+        storageType?: 'managed' | 'byod';
+        telegramFileId?: string;
+        telegramMessageId?: number;
+    }
 ): Promise<string> {
-    const publicShareLink = `${window.location.origin}/s/${id}`;
-
-    // Hash the password with a fresh random salt (never store plain text).
-    let passwordSalt: string | null = null;
-    let passwordVerifier: string | null = null;
-    if (settings.password) {
-        passwordSalt = toHex(crypto.getRandomValues(new Uint8Array(16)).buffer);
-        passwordVerifier = await derivePasswordVerifier(settings.password, passwordSalt);
+    if (!file?.name) {
+        throw new Error('Could not prepare this file for sharing. Please reload and try again.');
     }
 
-    // Mint the BYOD stream token if this is a BYOD file.
-    let streamToken: string | null = null;
-    let tokenExpiresAt: Date | null = null;
-    if (byod?.session && byod?.messageId) {
-        // The token TTL is capped server-side at 7 days (MAX_TTL in
-        // api/telegram/session-token.ts). A share with a longer or no expiry
-        // therefore stops working after 7 days while still looking active, so
-        // record when the token actually dies and let the UI say so.
-        const MAX_TOKEN_TTL = 7 * 24 * 60 * 60;
-        const requestedTtl = settings.expiresAt
-            ? Math.max(60, Math.floor((settings.expiresAt.getTime() - Date.now()) / 1000))
-            : MAX_TOKEN_TTL;
-        const ttlSeconds = Math.min(requestedTtl, MAX_TOKEN_TTL);
+    const storageType = file.storageType ?? 'managed';
 
-        const res = await fetch('/api/telegram/session-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(await getIdTokenHeader()) },
-            body: JSON.stringify({ session: byod.session, messageId: byod.messageId, ttlSeconds }),
-        });
-        if (!res.ok) {
-            // Do NOT hand back a link that cannot serve the file. Silently
-            // storing a null token produced share links that showed a broken
-            // preview with no explanation.
-            throw new Error(
-                'Could not prepare this file for sharing. Please check your Telegram connection and try again.'
+    if (storageType === 'byod') {
+        throw new ShareNotAvailableError(
+            "Public web links aren't available for this file — share via Telegram instead."
+        );
+    }
+
+    const MAX_TTL = 7 * 24 * 60 * 60;
+    const ttlSeconds = settings.expiresAt
+        ? Math.min(Math.max(60, Math.floor((settings.expiresAt.getTime() - Date.now()) / 1000)), MAX_TTL)
+        : MAX_TTL;
+
+    const res = await fetch('/api/telegram/share-create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await getIdTokenHeader()) },
+        body: JSON.stringify({
+            fileId: id,
+            name: file.name,
+            size: file.size ?? 0,
+            mimeType: file.mimeType ?? 'application/octet-stream',
+            storageType,
+            telegramFileId: file.telegramFileId,
+            telegramMessageId: file.telegramMessageId,
+            password: settings.password,
+            ttlSeconds,
+        }),
+    });
+
+    if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body?.reason === 'account-mode') {
+            throw new ShareNotAvailableError(
+                "Public web links aren't available for this file — share via Telegram instead."
             );
         }
-        const data = await res.json();
-        if (!data?.token) {
-            throw new Error('Could not prepare this file for sharing. Please try again.');
-        }
-        streamToken = data.token;
-        tokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
+        throw new Error(body?.error || 'Could not create a share link. Please try again.');
     }
+
+    const { blob, expiresAt } = await res.json();
+    if (!blob) {
+        throw new Error('Could not create a share link. Please try again.');
+    }
+
+    // The capability lives in the URL FRAGMENT. A fragment is never sent to the
+    // server, so it stays out of access logs, Referer headers and analytics —
+    // which matters because the fragment is the credential.
+    const publicShareLink = `${window.location.origin}/s/${id}#${blob}`;
 
     await updateDoc(doc(db, 'files', id), {
         isShared: true,
         shareSettings: {
-            // Salted PBKDF2 verifier. `password` is kept as an explicit null so
-            // any legacy unsalted SHA-256 value is overwritten on re-share.
+            // No password verifier, no salt, no streamToken. Explicit nulls so any
+            // legacy document is actively cleared rather than left carrying a
+            // readable secret.
             password: null,
-            passwordSalt,
-            passwordVerifier,
-            link: publicShareLink,
+            passwordSalt: null,
+            passwordVerifier: null,
+            streamToken: null,
+            tokenExpiresAt: null,
+            requiresPassword: Boolean(settings.password),
             expiresAt: settings.expiresAt ? Timestamp.fromDate(settings.expiresAt) : null,
-            streamToken,
-            tokenExpiresAt: tokenExpiresAt ? Timestamp.fromDate(tokenExpiresAt) : null,
+            linkExpiresAt: expiresAt ? Timestamp.fromDate(new Date(expiresAt)) : null,
         },
         updatedAt: serverTimestamp(),
     });
