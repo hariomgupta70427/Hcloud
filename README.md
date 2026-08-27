@@ -92,15 +92,23 @@ src/
    ```bash
    cp .env.example .env
    ```
-   
-   Edit `.env` and add your Firebase configuration:
+
+   > **Anything prefixed `VITE_` is inlined into the client bundle by Vite and is
+   > readable by every visitor. Never give a secret a `VITE_` prefix.**
+   > `npm run build` runs `scripts/check-bundle-secrets.mjs`, which fails the build
+   > if a secret reaches `dist/`.
+
+   Edit `.env` and add your Firebase configuration. These are **not** prefixed —
+   `vite.config.ts` injects them via `define`. Firebase web config is public by
+   design (it is a set of identifiers, not credentials); security comes from
+   Firestore rules, not from hiding these values:
    ```env
-   VITE_FIREBASE_API_KEY=your_api_key
-   VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-   VITE_FIREBASE_PROJECT_ID=your_project_id
-   VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-   VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-   VITE_FIREBASE_APP_ID=your_app_id
+   FIREBASE_API_KEY=your_api_key
+   FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+   FIREBASE_PROJECT_ID=your_project_id
+   FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
+   FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+   FIREBASE_APP_ID=your_app_id
    ```
 
 5. **Start the development server**
@@ -139,18 +147,27 @@ npm run preview
    - Set up security rules (see `firestore.rules`)
 
 3. **Storage**
-   - Create a storage bucket
-   - Set up security rules (see `storage.rules`)
+   - Cloud Storage is **not** used. All file bytes live in Telegram; Firestore holds
+     only metadata. There is no `storage.rules`.
 
-### Telegram Integration (Optional)
+### Telegram Integration
+
+Telegram is the storage backend, not an optional notification channel.
 
 1. Create a Telegram bot via [@BotFather](https://t.me/botfather)
-2. Get your bot token and chat ID
-3. Add them to your `.env` file:
+2. Get your bot token and the chat/channel ID
+3. Add them to `.env` **without** a `VITE_` prefix — these are server-only secrets,
+   read by the Vercel functions in `api/` and never sent to the browser:
    ```env
-   VITE_TELEGRAM_BOT_TOKEN=your_bot_token
-   VITE_TELEGRAM_CHAT_ID=your_chat_id
+   TELEGRAM_BOT_TOKEN=your_bot_token
+   TELEGRAM_CHAT_ID=your_chat_id
    ```
+
+   > A previous version of this file told you to use `VITE_TELEGRAM_BOT_TOKEN`, and
+   > `src/services/telegramService.ts` also carried the token as a hardcoded
+   > fallback. Both shipped the operator's bot token to every visitor. If you ever
+   > see a Telegram credential referenced from anything under `src/`, treat it as a
+   > live incident: revoke the token in @BotFather first, then fix the code.
 
 ## 🎨 Customization
 
