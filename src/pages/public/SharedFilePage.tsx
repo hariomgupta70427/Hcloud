@@ -227,8 +227,8 @@ export default function SharedFilePage() {
                         disabled={isCheckingPassword || !password}
                         className="w-full py-3 bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors font-medium disabled:opacity-60 flex items-center justify-center gap-2"
                     >
-                        {/* PBKDF2 with 210k iterations takes a moment — show it,
-                            otherwise the button feels broken on slower devices. */}
+                        {/* The check is a server round-trip (scrypt runs there, not
+                            here), so show progress or the button feels broken. */}
                         {isCheckingPassword && <Loader2 className="w-4 h-4 animate-spin" />}
                         {isCheckingPassword ? 'Verifying…' : 'Unlock'}
                     </button>

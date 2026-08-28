@@ -542,13 +542,81 @@ Tests: 34 passing (7 parentId, 13 share capability, 13 destructive funnel, 1 exa
 
 #### Blocked
 
-Artifacts (a) and (b) need the Firebase CLI authenticated to `hcloud-6e7eb`
-(`firebase login`) so the new rules can be deployed, plus one real shared file. The
-CLI is installed (14.17.0) but not authed.
+Nothing. Artifacts captured 2026-08-27 — see below.
 
-Note for whoever captures them: a 403 on a **nonexistent** document proves nothing —
-it fails the old `isShared` condition too. The artifact must use a genuinely shared
-document id.
+#### Gate artifacts — CAPTURED 2026-08-27
+
+Rules deployed to `hcloud-6e7eb`:
+
+```
++  cloud.firestore: rules file firestore.rules compiled successfully
++  firestore: released rules firestore.rules to cloud.firestore
++  Deploy complete!
+```
+
+**Artifact (a) — unauthenticated read of a REAL shared document is denied.**
+
+A genuine document with `isShared == true` was created by an authenticated owner,
+then read with no `Authorization` header:
+
+```
+$ curl -s -i ".../projects/hcloud-6e7eb/databases/(default)/documents/files/idhxMF9xR9KKYjY0Xm6d"
+HTTP/1.1 403 Forbidden
+{
+  "error": {
+    "code": 403,
+    "message": "Missing or insufficient permissions.",
+    "status": "PERMISSION_DENIED"
+  }
+}
+```
+
+This is the artifact that matters. A 403 on a *nonexistent* id proves nothing —
+it fails the old `isShared` condition too. This document **was** shared and is
+still denied.
+
+**Artifact (b) — the same document contains no secret to leak.** Read back as its
+owner:
+
+```
+  name       = gate-artifact-probe.mp4
+  isShared   = True
+  shareSettings keys:
+    expiresAt            nullValue      None
+    password             nullValue      None
+    passwordSalt         nullValue      None
+    passwordVerifier     nullValue      None
+    requiresPassword     booleanValue   True
+    streamToken          nullValue      None
+    tokenExpiresAt       nullValue      None
+
+  SECRET-BEARING FIELDS WITH A VALUE: NONE
+```
+
+**Artifact (b) part 2 — static proof, covering every document rather than one.**
+Every occurrence of the three secret-bearing field names in the codebase is a type
+declaration, a comment, or an explicit `null` write:
+
+```
+$ grep -rn 'streamToken|passwordVerifier|passwordSalt' src/ api/
+src/services/fileService.ts:41,43,46   type declaration (marked LEGACY, READ-ONLY)
+src/services/fileService.ts:527,528,529  passwordSalt: null / passwordVerifier: null / streamToken: null
+...remaining matches are comments and one test docstring
+
+$ grep -rn 'crypto.subtle|PBKDF2' src/
+  no client-side password crypto remains
+
+$ grep -rn 'firebase|firestore' src/pages/public/SharedFilePage.tsx
+  none — the public page has no Firebase import at all
+```
+
+So even if a future rules change regressed, there is nothing in these documents to
+hand out. That is why (b) is the stronger half of the pair.
+
+Probe cleanup: document deleted (`http=200`) and the throwaway account deleted
+(`http=200`). The follow-up owner read returns 403 rather than 404 because the
+rules evaluate `resource.data` on a missing document — expected, not a failed
+delete.
 
 #### Follow-ups found during Stage 1 — not fixed here
 

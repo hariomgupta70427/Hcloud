@@ -35,17 +35,22 @@ export interface FileItem {
     isDeleted?: boolean;
     deletedAt?: Date;
     shareSettings?: {
-        /** Legacy unsalted SHA-256 hash. Only read for shares created before PBKDF2. */
+        // LEGACY, READ-ONLY. These four are never written with a value any more —
+        // shareFile writes explicit nulls. Share passwords are hashed and verified
+        // server-side (api/_lib/shareToken.ts) and the capability lives in the
+        // link fragment, because anything stored here is readable by whoever can
+        // read the document. Kept only so old documents still deserialise.
         password?: string;
-        /** Random per-share salt (hex) for the PBKDF2 verifier. */
         passwordSalt?: string;
-        /** PBKDF2-SHA256 verifier (hex) of the share password. */
         passwordVerifier?: string;
+        streamToken?: string;
+        tokenExpiresAt?: Date;
+        /** Whether the link challenges for a password. Not a secret. */
+        requiresPassword?: boolean;
         expiresAt?: Date;
         link?: string;
-        streamToken?: string; // BYOD: opaque encrypted stream token for the public page
-        /** When streamToken stops working (capped at 7 days by the minting API). */
-        tokenExpiresAt?: Date;
+        /** When the minted capability stops working. */
+        linkExpiresAt?: Date;
     };
     path: string;
     thumbnail?: string;
