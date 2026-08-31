@@ -38,7 +38,7 @@ interface FileState {
   restoreItem: (id: string) => Promise<void>;
   permanentDeleteItem: (id: string) => Promise<void>;
   emptyTrash: () => Promise<void>;
-  shareItem: (id: string, settings: { password?: string; expiresAt?: Date }, byod?: { session: string; messageId: number }) => Promise<string>;
+  shareItem: (id: string, settings: { password?: string; expiresAt?: Date }) => Promise<string>;
   setLoading: (loading: boolean) => void;
   setUploadProgress: (fileId: string, progress: number) => void;
   removeUploadProgress: (fileId: string) => void;
@@ -302,9 +302,25 @@ export const useFileStore = create<FileState>((set, get) => ({
     }
   },
 
-  shareItem: async (id, settings, byod) => {
+  shareItem: async (id, settings) => {
     try {
-      const shareLink = await fileService.shareFile(id, settings, byod);
+      // The store already holds the file, so it supplies the metadata the mint
+      // endpoint needs. Callers used to thread a BYOD session through here;
+      // sessions no longer leave the device and nothing sensitive is stored, so
+      // the parameter is gone.
+      const file = get().files.find((f) => f.id === id);
+      if (!file) {
+        throw new Error('That file is no longer available. Please refresh and try again.');
+      }
+
+      const shareLink = await fileService.shareFile(id, settings, {
+        name: file.name,
+        size: file.size,
+        mimeType: file.mimeType,
+        storageType: file.storageType,
+        telegramFileId: file.telegramFileId,
+        telegramMessageId: file.telegramMessageId,
+      });
       set((state) => ({
         files: state.files.map((f) =>
           f.id === id ? { ...f, isShared: true } : f

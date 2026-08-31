@@ -234,12 +234,10 @@ export default function FilesPage() {
     // Do NOT close the dialog here — the ShareDialog needs to stay open to
     // display the generated link so the user can copy it. Closing it (the old
     // behaviour) is exactly why "I can't get the link" happened.
-    // For BYOD files, pass the owner session + messageId so shareFile can mint
-    // an encrypted stream token the public page can use (owner has no session there).
-    const byod = (shareFile.storageType === 'byod' && shareFile.telegramMessageId && user?.byodConfig?.telegramSession)
-      ? { session: user.byodConfig.telegramSession, messageId: shareFile.telegramMessageId }
-      : undefined;
-    return await shareItem(shareFile.id, settings, byod);
+    //
+    // No BYOD session is threaded through any more: the session never leaves the
+    // device, and the store supplies the file metadata the mint endpoint needs.
+    return await shareItem(shareFile.id, settings);
   };
 
   const handleFileAction = async (action: string, file: FileItem) => {

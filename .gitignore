@@ -45,8 +45,12 @@ upload-server/.env
 # Local-only docs
 PRD.md
 DEPLOY.md
-firebase.json
-firestore.indexes.json
+
+# NOTE — firebase.json, firestore.rules and firestore.indexes.json are TRACKED.
+# They were previously ignored, which meant the security rules and index
+# definitions lived outside version control: nobody could review a rules change,
+# and a fresh clone could not run `firebase deploy --only firestore:rules` at all.
+# Rules are security-critical config and belong in git.
 
 # NOTE — src/lib/firebase.ts and src/services/telegramService.ts were listed here
 # to "protect hardcoded credentials". That never worked: both files were already

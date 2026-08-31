@@ -490,16 +490,146 @@ load, including on `OPTIONS`.
 **Still outstanding for Stage 0:** a managed upload and a Range stream against production, which
 are blocked on the rotated bot token reaching Vercel (§R8). Those transcripts get appended here.
 
-### Stage 1 — Data-loss and security (existing bot path)
-Per-page state slices (kills the Trash-deletes-a-live-file window); the single destructive-op
-function with undo (§8); server-side share-password verification; stop returning `streamToken` to
-anonymous readers; stream-token TTL raised and re-minted on `error`; `emptyTrash` batch bug;
-resolve backend readiness **before** routing an upload; `canPlayType()` gate; pass `&name=` so MIME
-is correct.
+### Stage 1 — Data-loss and security (existing bot path) — IN PROGRESS
 
-Nothing here may assume a single backend.
+**Scope trimmed by owner decision, 2026-08-25.** The original scope rewrote
+Firestore-backed code that Stage 2.7 deletes outright. With zero users the data-loss
+bugs have nothing to damage yet, so paying for that rewrite twice was not worth it.
 
-**Proof:** a failing-then-passing test per data-loss bug.
+**DEFERRED to Stage 2: the per-page state-slice refactor of `fileStore.files`.**
+Six pages share one array and their effects run after first paint, so navigating
+Files -> Trash briefly renders live files in the Trash table with "Delete
+Permanently" wired up (S1). The fix is per-page slices — but Stage 2.6 rewrites this
+UI anyway, so doing it now means writing it twice. Deferred deliberately, not
+forgotten. Until then the destructive funnel is the mitigation: a purge is deferred
+behind an undo window rather than applied on click.
+
+**Gate artifact substituted, owner decision.** The original gate was a before/after
+403 pair. Capturing the "before" would mean re-deploying the old permissive rules to
+production to photograph a `200` with a live `streamToken` — deliberately
+reintroducing the vulnerability. Replaced with two stronger artifacts:
+
+- **(a)** an unauthenticated REST read of a **real shared document** returning 403
+  under the new rules, and
+- **(b)** a field dump of that same document showing **no `streamToken` and no
+  password verifier exist at all**.
+
+(b) is the stronger claim: (a) proves the rules deny access today, while (b) proves
+there is nothing to leak even if a future rules change regresses.
+
+#### Done
+
+- **Anonymous reads denied.** The `allow get: if resource.data.isShared == true`
+  branch is gone. It could not be made safe — rules authorise whole documents and
+  cannot restrict which fields return, so every link-holder received
+  `shareSettings.streamToken` and the password verifier.
+- **Sharing reworked so that is possible.** Links carry an opaque AES-256-GCM
+  capability in the URL **fragment** (never sent to a server, so it stays out of
+  access logs and `Referer`). `share-create` mints it for an authenticated owner;
+  `share-resolve` enforces the password **server-side** and returns nothing
+  streamable until it passes. Firestore stores no token and no verifier.
+  `SharedFilePage` now imports no Firebase at all.
+- **Destructive-op funnel** (`src/lib/destructiveOps.ts`) with a real undo window.
+  Soft delete keeps the Telegram message; hard delete is **deferred** until the
+  window elapses, so undo cancels it outright rather than trying to reverse it.
+- **`emptyTrash` batch bug** fixed — it reused a `WriteBatch` after `commit()`,
+  which Firestore rejects, so emptying >400 items always half-failed.
+- **`firebase.json`, `firestore.rules`, `firestore.indexes.json` now tracked.**
+  They were gitignored: rules changes were unreviewable and a fresh clone could not
+  run `firebase deploy --only firestore:rules` at all.
+
+Tests: 34 passing (7 parentId, 13 share capability, 13 destructive funnel, 1 example).
+
+#### Blocked
+
+Nothing. Artifacts captured 2026-08-27 — see below.
+
+#### Gate artifacts — CAPTURED 2026-08-27
+
+Rules deployed to `hcloud-6e7eb`:
+
+```
++  cloud.firestore: rules file firestore.rules compiled successfully
++  firestore: released rules firestore.rules to cloud.firestore
++  Deploy complete!
+```
+
+**Artifact (a) — unauthenticated read of a REAL shared document is denied.**
+
+A genuine document with `isShared == true` was created by an authenticated owner,
+then read with no `Authorization` header:
+
+```
+$ curl -s -i ".../projects/hcloud-6e7eb/databases/(default)/documents/files/idhxMF9xR9KKYjY0Xm6d"
+HTTP/1.1 403 Forbidden
+{
+  "error": {
+    "code": 403,
+    "message": "Missing or insufficient permissions.",
+    "status": "PERMISSION_DENIED"
+  }
+}
+```
+
+This is the artifact that matters. A 403 on a *nonexistent* id proves nothing —
+it fails the old `isShared` condition too. This document **was** shared and is
+still denied.
+
+**Artifact (b) — the same document contains no secret to leak.** Read back as its
+owner:
+
+```
+  name       = gate-artifact-probe.mp4
+  isShared   = True
+  shareSettings keys:
+    expiresAt            nullValue      None
+    password             nullValue      None
+    passwordSalt         nullValue      None
+    passwordVerifier     nullValue      None
+    requiresPassword     booleanValue   True
+    streamToken          nullValue      None
+    tokenExpiresAt       nullValue      None
+
+  SECRET-BEARING FIELDS WITH A VALUE: NONE
+```
+
+**Artifact (b) part 2 — static proof, covering every document rather than one.**
+Every occurrence of the three secret-bearing field names in the codebase is a type
+declaration, a comment, or an explicit `null` write:
+
+```
+$ grep -rn 'streamToken|passwordVerifier|passwordSalt' src/ api/
+src/services/fileService.ts:41,43,46   type declaration (marked LEGACY, READ-ONLY)
+src/services/fileService.ts:527,528,529  passwordSalt: null / passwordVerifier: null / streamToken: null
+...remaining matches are comments and one test docstring
+
+$ grep -rn 'crypto.subtle|PBKDF2' src/
+  no client-side password crypto remains
+
+$ grep -rn 'firebase|firestore' src/pages/public/SharedFilePage.tsx
+  none — the public page has no Firebase import at all
+```
+
+So even if a future rules change regressed, there is nothing in these documents to
+hand out. That is why (b) is the stronger half of the pair.
+
+Probe cleanup: document deleted (`http=200`) and the throwaway account deleted
+(`http=200`). The follow-up owner read returns 403 rather than 404 because the
+rules evaluate `resource.data` on a missing document — expected, not a failed
+delete.
+
+#### Follow-ups found during Stage 1 — not fixed here
+
+- **Hard delete reclaims no Telegram storage.** `telegramService.deleteFromTelegram`
+  is a hardcoded `return false`, so `purgeItem` removes the index record and leaves
+  the bytes in Telegram forever. Needs Bot API `deleteMessage` for `bot` mode and
+  `messages.deleteMessages` for `account` mode.
+- **Old share links break.** They are `/s/:id` with no fragment, and share documents
+  are no longer publicly readable, so they now show "missing its access key. Ask the
+  owner to re-share". Acceptable at zero users; noted so it is not rediscovered as a
+  bug.
+- **Account-mode public links** are refused at mint time with copy pointing at
+  Telegram (R4). The Telegram forwarding path itself is Stage 2 work.
 
 ### Stage 2 — Account mode
 **Task 2.0:** WSS transport is already proven reachable from all five DCs and from the production
