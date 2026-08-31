@@ -201,6 +201,31 @@ An earlier attempt to fix this added `src/services/telegramService.ts` to `.giti
 nothing — the file was already tracked, and `.gitignore` has no effect on a tracked file. The
 entry only created false confidence. It has been removed.
 
+**THE LEAK WAS EXPLOITED — confirmed 2026-08-27.** This is no longer theoretical.
+A tamper check (`getMyDescription` / `getMyShortDescription`) found the bot's public
+profile rewritten into VPN referral spam:
+
+```
+description (340 chars):
+  Не работают любимые сайты? Попробуйте EmNetwork - 3 дня бесплатно и скидка 30% ...
+  https://t.me/EmNetworkBot?start=nurmanbeknesterov   (x4)
+short_description (80 chars):
+  EmNetwork не страшны никакие интернет-блокировки - проверьте сами: @EmNetworkBot
+```
+
+Only a token holder can call `setMyDescription`. Scope of the compromise:
+
+- **Profile-only monetisation.** `getMyName` was intact (`Hcloud`) and `getMyCommands`
+  empty, so no attempt to impersonate the service or add commands.
+- **No webhook was ever set**, so the attacker was not reading updates or harvesting
+  messages. This is why the earlier "no sign of misuse" check came back clean — it
+  looked at webhooks and pending updates, which this attack does not need.
+- **Rotation removed access but did not undo the edit.** Both fields were cleared
+  manually on 2026-08-27 and verified empty.
+
+Lesson recorded: after any credential leak, audit **mutable state the credential
+could have changed**, not just whether access still works.
+
 **Decision (owner, 2026-08-24): the token is rotated in @BotFather; history is NOT rewritten.**
 
 Rationale:
@@ -487,8 +512,34 @@ verify-code            200      401      OK
 This closes the Stage 0 gate. Before the fix, every one of the four returned a hard 500 at module
 load, including on `OPTIONS`.
 
-**Still outstanding for Stage 0:** a managed upload and a Range stream against production, which
-are blocked on the rotated bot token reaching Vercel (§R8). Those transcripts get appended here.
+**Range stream against production — CAPTURED 2026-08-27.** 512 KiB file, `&name=` passed
+so the MIME and filename are correct:
+
+```
+$ curl -i -H 'Range: bytes=1000-1999'     'https://hcloud-pi.vercel.app/api/telegram/stream?fileId=<id>&name=probe.bin'
+HTTP/1.1 206 Partial Content
+Accept-Ranges: bytes
+Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges
+Cache-Control: private, max-age=3600
+Content-Disposition: inline; filename*=UTF-8''probe.bin
+Content-Length: 1000
+Content-Range: bytes 1000-1999/524288
+Content-Type: application/octet-stream
+bytes received: 1000
+
+# full GET for comparison
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Content-Length: 524288
+```
+
+Correct `Content-Range` against a true total of 524288, exactly 1000 bytes delivered, and
+`Accept-Ranges` present — which is what makes a `<video>` scrub bar work.
+
+**Managed upload against production — BLOCKED, not by the token.** The rotated token is
+live and verified (`getMe` ok, bot id unchanged, webhook empty, 0 pending). The blocker is
+that `TELEGRAM_CHAT_ID` is set to the bot's own id, so every upload returns
+`403 Forbidden: the bot can't send messages to the bot`. See §14.
 
 ### Stage 1 — Data-loss and security (existing bot path) — IN PROGRESS
 
@@ -618,12 +669,53 @@ Probe cleanup: document deleted (`http=200`) and the throwaway account deleted
 rules evaluate `resource.data` on a missing document — expected, not a failed
 delete.
 
+#### Sharing verified end to end on production — 2026-08-27
+
+Rules and code are back in sync. Full round trip against
+`https://hcloud-pi.vercel.app`, password-protected share:
+
+```
+1. share-create (authenticated)
+     requiresPassword=True  blob len=494  expiresAt=2026-09-07T05:23:55Z
+
+2. share-resolve, NO password                        -> 401
+     {"name":"share.bin","size":131072,"requiresPassword":true,
+      "error":"This file is password protected"}          <- no streamUrl
+
+3. share-resolve, WRONG password                     -> 401
+     {"...","error":"Incorrect password"}                 <- no streamUrl
+
+4. share-resolve, CORRECT password                   -> 200
+     {"...","streamUrl":"/api/telegram/stream?fileId=…&name=share.bin",
+      "downloadUrl":"…&download=1"}
+
+5. GET the returned streamUrl with Range: bytes=0-99  -> 206
+     Content-Range: bytes 0-99/131072
+     Content-Length: 100        (100 bytes received)
+
+6. tampered blob                                     -> 404
+```
+
+Steps 2 and 3 are the security property: display metadata is returned, but nothing
+streamable, and the password is checked server-side. Step 6 confirms GCM rejects a
+tampered capability rather than degrading.
+
+**Residual weakness, not fixed in Stage 1 (was S4).** The `streamUrl` handed back in
+step 4 is `?fileId=<telegram handle>` with **no auth of its own**, so it is itself a
+bearer capability: anyone who obtains that URL can stream without the password, and it
+does not expire. The password gate is real, but what it protects is a long-lived
+handle rather than a short-lived token.
+
+Not a regression — this is pre-existing behaviour of `/api/telegram/stream`. It is
+strictly better than before (the handle used to be readable from Firestore without any
+password at all). Proper fix: have `share-resolve` mint a short-TTL stream token and
+have the stream endpoint require it, so `?fileId=` stops being accepted from the
+public path. Scheduled with the `bot`-mode demo hardening.
+
 #### Follow-ups found during Stage 1 — not fixed here
 
-- **Hard delete reclaims no Telegram storage.** `telegramService.deleteFromTelegram`
-  is a hardcoded `return false`, so `purgeItem` removes the index record and leaves
-  the bytes in Telegram forever. Needs Bot API `deleteMessage` for `bot` mode and
-  `messages.deleteMessages` for `account` mode.
+- **Hard delete reclaims no Telegram storage — CORRECTNESS DEFECT, promoted to
+  Stage 2's definition of done. See §16.**
 - **Old share links break.** They are `/s/:id` with no fragment, and share documents
   are no longer publicly readable, so they now show "missing its access key. Ask the
   owner to re-share". Acceptable at zero users; noted so it is not rediscovered as a
@@ -722,3 +814,174 @@ render. React Query mounted with zero `useQuery` calls.
 (WCAG 1.4.4). Three `aria-label`s outside `components/ui/`; zero `role="dialog"`, focus traps or
 focus restoration across seven hand-rolled modals. Scrub bars are `<div onClick>`. Mobile
 selection bar sits under the bottom nav.
+
+---
+
+## 14. Environment variables — what reaches the client, and why
+
+**Two mechanisms put a value into the client bundle, and only one is obvious:**
+
+1. A `VITE_` prefix — Vite inlines these automatically.
+2. `vite.config.ts` `define` — inlines **any** name, prefix or not. This is how the
+   unprefixed `FIREBASE_*` values reach `dist/`, and it is the same mechanism that
+   previously carried the bot token.
+
+**So a missing `VITE_` prefix is NOT evidence that something is server-only.** Check
+the `define` block too.
+
+### Allowed in the client — public identifiers, not credentials
+
+| Variable | Why it is safe |
+|---|---|
+| `FIREBASE_API_KEY` | Firebase web config is public by design; security comes from Firestore rules |
+| `FIREBASE_AUTH_DOMAIN` | same |
+| `FIREBASE_PROJECT_ID` | same |
+| `FIREBASE_STORAGE_BUCKET` | same |
+| `FIREBASE_MESSAGING_SENDER_ID` | same |
+| `FIREBASE_APP_ID` | same |
+| `VITE_UPLOAD_SERVER_URL` | a hostname the browser must connect to |
+| `VITE_API_BASE_URL` | a path prefix |
+
+### Never in the client
+
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `STREAM_TOKEN_SECRET`, `ADMIN_SECRET`.
+Read only by `api/` functions. A hit is a live incident — see R8 for what happened
+the one time it was true.
+
+### Expected to become client-visible in Stage 2 — NOT a leak
+
+`TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.
+
+Browser MTProto cannot work without them, and every third-party Telegram client ships
+its own — Telegram Web included. They are **app** identifiers, not user credentials:
+they grant access to no account. The mitigation is 2–3 registered `api_id`s selected
+by remote config (R5), not secrecy.
+
+**Do not "fix" this later by removing them.** Doing so breaks account mode. The
+bundle guard reports them as a note and passes.
+
+### Enforcement
+
+`scripts/check-bundle-secrets.mjs` runs inside `npm run build` and enforces this
+list explicitly rather than guessing from name patterns. Verified in both directions:
+
+```
+clean dist/ ......................................... exit 0
+TELEGRAM_CHAT_ID value planted in dist/ ............. exit 1
+TELEGRAM_API_HASH planted in dist/ .................. exit 0 + "expected" note
+VITE_UPLOAD_SERVER_URL in env ....................... exit 0
+VITE_TELEGRAM_BOT_TOKEN in env ...................... exit 1
+```
+
+Known limitation: `TELEGRAM_CHAT_ID` is a bare integer, so the exact-value check could
+in principle collide with an unrelated number in the bundle. It does not today. If it
+ever false-positives, narrow that one entry rather than removing the check.
+
+### Scheduled for removal — do NOT remove yet
+
+| Variable | Remove when | Why it must stay for now |
+|---|---|---|
+| `UPLOAD_SERVER_URL` | account mode lands | backs the live Render relay |
+| `VITE_UPLOAD_SERVER_URL` | account mode lands | same, and it is named in the CSP `connect-src`/`media-src`; removing it before the relay is gone breaks BYOD upload and playback |
+| `FIREBASE_PROJECT_ID` (duplication) | Firestore is deleted in Stage 2.7 | currently set per-environment **and** required server-side by `api/_lib/firebaseAuth.ts`, which rejects every authenticated request without it. Consolidate at 2.7, not before. |
+
+### `TELEGRAM_CHAT_ID` — two separate problems
+
+1. **Personal DM, not a channel.** It points at the operator's own DM with the bot, so
+   managed mode stores every demo user's files there. Already noted in §2.5; moving it
+   to a dedicated operator channel is **part of the bot-mode demo work**, not a new
+   item.
+2. **Currently misconfigured (found 2026-08-27).** It is set to the **bot's own numeric
+   id** — the token's prefix — in both local `.env` and Vercel, most likely copied from
+   the rotated token. Every managed upload fails:
+
+```
+$ curl -X POST https://hcloud-pi.vercel.app/api/telegram/managed-upload
+{"success":false,"error":"Forbidden: the bot can't send messages to the bot"}
+[http=400]
+```
+
+Reproduced directly against the Bot API: `sendDocument` with `chat_id` = bot id gives
+exactly `403 Forbidden: the bot can't send messages to the bot`. A bot cannot message
+itself. Fix by pointing it at a real chat or, preferably, the dedicated channel from
+problem 1.
+
+---
+
+## 15. Testing hygiene
+
+### Assert the identity you are actually authenticating as
+
+While capturing the Stage 1 rules artifact, a Firestore `create` was denied and the
+rules looked broken. They were correct. The script did:
+
+```bash
+UID=$(echo "$SU" | ...)      # UID is a READONLY variable in bash
+```
+
+`UID` is a bash built-in holding the shell's own user id, so the assignment was
+silently ignored and the document was written with `userId: 197612`. The ownership
+rule `request.resource.data.userId == request.auth.uid` then correctly refused it.
+
+A silently wrong variable made a correct security rule look like a failure — and the
+tempting "fix" would have been to loosen the rule.
+
+**Rule: any future rules test must assert the identity it is authenticating as before
+drawing a conclusion from an allow or a deny.** Print the uid from the token and
+compare it to the uid being written. Never infer rule correctness from a single
+request whose inputs you have not verified.
+
+---
+
+## 16. Known issue: orphaned bytes (hard delete does not delete)
+
+**Severity: correctness defect, not a cosmetic follow-up.** For a storage product,
+"delete" that does not delete is a broken promise about the user's data.
+
+`telegramService.deleteFromTelegram` is a hardcoded `return false`. So `purgeItem`
+removes the index record and **leaves the bytes in Telegram permanently**, with
+nothing left pointing at them. Every hard delete performed so far has orphaned its
+content.
+
+### Added to Stage 2's definition of done
+
+Stage 2 is not complete until real deletion works in both backends:
+
+- **`account` mode** — `messages.deleteMessages` over MTProto for every part of the
+  file, then remove the index record. Parts are 1 GiB each, so a multi-GB file is
+  many messages: deletion must be batched, resumable, and must not leave a partially
+  deleted file addressable.
+- **`bot` mode** — Bot API `deleteMessage` per chunk in the operator's channel.
+
+Ordering rule: **delete the Telegram messages first, then the index record.** The
+reverse orphans bytes on any partial failure, which is exactly the current bug. A
+failed message delete must leave the index entry intact so the operation is
+retryable.
+
+### Until it works, the UI must not claim storage was reclaimed
+
+No "freed X MB", no storage-used figure that assumes purge worked. Say the record was
+removed. Overstating this is worse than saying nothing, because the user then deletes
+more to reclaim space that never comes back.
+
+### Finding the existing orphans later
+
+They are recoverable, because Telegram is the source of truth and the index is
+derived (invariant 2):
+
+1. Enumerate messages in the storage channel — `messages.getHistory` for `account`
+   mode. Bot API cannot read history, so `bot`-mode orphans need the operator's own
+   account, not the bot.
+2. Build the set of `(chatId, messageId)` pairs referenced by the index (§5.2 stores
+   both, precisely so this is possible).
+3. Anything in the channel and not in the index is an orphan.
+
+Cost estimate: one `getHistory` pass over the channel, ~100 messages per request, so
+a channel with 10 000 messages is ~100 requests plus `FLOOD_WAIT` backoff — minutes,
+not hours. Cheap enough to run as a periodic reconciliation job rather than a one-off
+migration.
+
+Caveat to check before trusting the result: a message the user posted to that channel
+by hand would also appear as an orphan. Reconciliation must report candidates for
+review, not delete them automatically.
+
