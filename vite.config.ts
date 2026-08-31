@@ -64,6 +64,14 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.FIREBASE_STORAGE_BUCKET': JSON.stringify(env.FIREBASE_STORAGE_BUCKET),
       'import.meta.env.FIREBASE_MESSAGING_SENDER_ID': JSON.stringify(env.FIREBASE_MESSAGING_SENDER_ID),
       'import.meta.env.FIREBASE_APP_ID': JSON.stringify(env.FIREBASE_APP_ID),
+      // Telegram app credentials for browser MTProto (account mode).
+      // These ARE client-visible and that is BY DESIGN: browser MTProto cannot
+      // work without them, and every third-party Telegram client ships its own.
+      // They are app identifiers and grant access to no account. The mitigation
+      // is multiple registered api_ids selected by remote config (R5), not
+      // secrecy. See ARCHITECTURE-V3 section 14 — do NOT remove these.
+      'import.meta.env.TELEGRAM_API_ID': JSON.stringify(env.TELEGRAM_API_ID),
+      'import.meta.env.TELEGRAM_API_HASH': JSON.stringify(env.TELEGRAM_API_HASH),
       // NOTE: no Telegram credentials are exposed to the client.
       // TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID have always been server-only.
       // TELEGRAM_API_ID / TELEGRAM_API_HASH were briefly exposed here for an
