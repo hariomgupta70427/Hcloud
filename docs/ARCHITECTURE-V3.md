@@ -669,6 +669,49 @@ Probe cleanup: document deleted (`http=200`) and the throwaway account deleted
 rules evaluate `resource.data` on a missing document — expected, not a failed
 delete.
 
+#### Sharing verified end to end on production — 2026-08-27
+
+Rules and code are back in sync. Full round trip against
+`https://hcloud-pi.vercel.app`, password-protected share:
+
+```
+1. share-create (authenticated)
+     requiresPassword=True  blob len=494  expiresAt=2026-09-07T05:23:55Z
+
+2. share-resolve, NO password                        -> 401
+     {"name":"share.bin","size":131072,"requiresPassword":true,
+      "error":"This file is password protected"}          <- no streamUrl
+
+3. share-resolve, WRONG password                     -> 401
+     {"...","error":"Incorrect password"}                 <- no streamUrl
+
+4. share-resolve, CORRECT password                   -> 200
+     {"...","streamUrl":"/api/telegram/stream?fileId=…&name=share.bin",
+      "downloadUrl":"…&download=1"}
+
+5. GET the returned streamUrl with Range: bytes=0-99  -> 206
+     Content-Range: bytes 0-99/131072
+     Content-Length: 100        (100 bytes received)
+
+6. tampered blob                                     -> 404
+```
+
+Steps 2 and 3 are the security property: display metadata is returned, but nothing
+streamable, and the password is checked server-side. Step 6 confirms GCM rejects a
+tampered capability rather than degrading.
+
+**Residual weakness, not fixed in Stage 1 (was S4).** The `streamUrl` handed back in
+step 4 is `?fileId=<telegram handle>` with **no auth of its own**, so it is itself a
+bearer capability: anyone who obtains that URL can stream without the password, and it
+does not expire. The password gate is real, but what it protects is a long-lived
+handle rather than a short-lived token.
+
+Not a regression — this is pre-existing behaviour of `/api/telegram/stream`. It is
+strictly better than before (the handle used to be readable from Firestore without any
+password at all). Proper fix: have `share-resolve` mint a short-TTL stream token and
+have the stream endpoint require it, so `?fileId=` stops being accepted from the
+public path. Scheduled with the `bot`-mode demo hardening.
+
 #### Follow-ups found during Stage 1 — not fixed here
 
 - **Hard delete reclaims no Telegram storage — CORRECTNESS DEFECT, promoted to
