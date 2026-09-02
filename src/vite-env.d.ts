@@ -11,7 +11,7 @@ interface ImportMeta {
 
 declare global {
     interface Window {
-        Buffer: any;
+        // Buffer is intentionally absent — see src/polyfills.ts.
         process: any;
     }
 }

@@ -17,15 +17,28 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
-      // Minimal polyfills. gramjs (which needed crypto/stream/vm/zlib/http
-      // shims) no longer runs in the browser — all MTProto work happens on the
-      // Render server — so only the small set that library code still touches is
-      // shimmed. Dropping the rest removes a large amount of dead weight from
-      // the bundle and the crypto-browserify shim that required eval().
+      // Minimal polyfills, and deliberately NO Buffer global.
+      //
+      // Injecting a fake `Buffer` is actively harmful, not merely dead weight.
+      // Libraries feature-detect with `typeof Buffer !== 'undefined'` and then
+      // take their Node code path — but the browser `buffer` package (6.0.3) does
+      // not implement every encoding Node's does. @fuman/utils (used by mtcute)
+      // does exactly this:
+      //
+      //     if (typeof Buffer !== 'undefined')
+      //         return Buffer.from(bytes).toString(url ? 'base64url' : 'base64')
+      //
+      // With the polyfill present that throws `TypeError: Unknown encoding:
+      // base64url`, which broke QR login. With no Buffer at all it uses its own
+      // pure-JS base64, which handles base64url correctly. Removing the shim FIXED
+      // the feature.
+      //
+      // gramjs, which is what originally needed crypto/stream/vm/zlib shims, no
+      // longer runs in the browser at all.
       nodePolyfills({
-        include: ['buffer', 'process', 'util', 'events'],
+        include: ['process', 'util', 'events'],
         globals: {
-          Buffer: true,
+          Buffer: false,
           global: true,
           process: true,
         },

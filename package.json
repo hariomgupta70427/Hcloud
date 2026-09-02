@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "serve:csp": "node scripts/serve-with-production-csp.mjs"
   },
   "engines": {
     "node": "24.x"
