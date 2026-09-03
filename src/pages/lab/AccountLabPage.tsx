@@ -7,7 +7,7 @@ import {
     isSessionRevoked,
     resetLocalSession,
 } from '@/lib/mtprotoPort';
-import { resolveStorageChannel } from '@/lib/storageChannel';
+import { resolveStorageChannel, CHANNEL_SCHEMA_VERSION } from '@/lib/storageChannel';
 
 /**
  * /lab/account — the Task 2.0 hard gate, as a page you can actually use.
@@ -59,6 +59,19 @@ function explain(e: unknown): string {
     }
 }
 
+/**
+ * First line of every log.
+ *
+ * A stale browser tab once produced a transcript from pre-fix code that looked
+ * valid; establishing that took a string-by-string diff of dist/. Stamping the
+ * build makes a transcript self-identifying. External signals (dcOptions counts,
+ * timings) are corroboration at best — Telegram can change them at will — so they
+ * are never used to infer which build ran.
+ */
+function buildFingerprint(): string {
+    return `build ${__BUILD_SHA__} · built ${__BUILD_TIME__} · marker schemaVersion ${CHANNEL_SCHEMA_VERSION}`;
+}
+
 export default function AccountLabPage() {
     const [steps, setSteps] = useState<Step[]>(INITIAL);
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -68,6 +81,7 @@ export default function AccountLabPage() {
     const [log, setLog] = useState<string[]>([]);
     const [busy, setBusy] = useState(false);
     const [revoked, setRevoked] = useState<string | null>(null);
+    const [copied, setCopied] = useState(false);
     const abortRef = useRef<AbortController | null>(null);
 
     // ── 2FA state ──────────────────────────────────────────────────────────────
@@ -104,6 +118,45 @@ export default function AccountLabPage() {
         resolve(secret);
     };
 
+    /**
+     * Export the log as text. Selecting the <pre> by hand lost three of four runs
+     * last time, so the transcript needs a deterministic way out of the page.
+     */
+    const logText = () =>
+        [
+            '# HCloud Task 2.0 gate transcript',
+            `# ${buildFingerprint()}`,
+            `# captured ${new Date().toISOString()}`,
+            '',
+            ...steps.map((st) => `${st.state === 'ok' ? '[PASS]' : st.state === 'fail' ? '[FAIL]' : '[    ]'} ${st.label}${st.detail ? ` — ${st.detail}` : ''}`),
+            '',
+            ...log,
+        ].join('\n');
+
+    const copyLog = async () => {
+        try {
+            await navigator.clipboard.writeText(logText());
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch {
+            // Clipboard can be blocked by permissions or a non-secure context;
+            // the download button is the fallback, so say so rather than failing mute.
+            say('clipboard blocked — use "Download .txt" instead');
+        }
+    };
+
+    const downloadLog = () => {
+        const blob = new Blob([logText()], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `hcloud-gate-${__BUILD_SHA__}-${Date.now()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
     const resetSession = async () => {
         say('resetting local session: destroying worker client + deleting IndexedDB');
         await resetLocalSession(); // reloads the page
@@ -116,7 +169,7 @@ export default function AccountLabPage() {
         setScanState(null);
         setMe(null);
         setChannel(null);
-        setLog([]);
+        setLog([`${new Date().toISOString().slice(11, 23)}  ${buildFingerprint()}`]);
         setRevoked(null);
         setPwOpen(false);
         setPwHint(null);
@@ -160,7 +213,9 @@ export default function AccountLabPage() {
                     ? `reused persisted auth key (${ms} ms — no handshake performed)`
                     : `fresh auth-key exchange (${ms} ms)`,
             });
-            set(2, { state: 'ok', detail: `help.getConfig returned ${dcs} dcOptions` });
+            // dcOptions count is a server-side detail Telegram may change at will.
+            // Reported as corroboration only — never used to infer build or auth state.
+            set(2, { state: 'ok', detail: `help.getConfig returned ${dcs} dcOptions (informational)` });
             say(hadKey
                 ? `OK: reused persisted auth key, help.getConfig -> ${dcs} dcOptions (${ms} ms)`
                 : `OK: FRESH auth-key exchange completed, help.getConfig -> ${dcs} dcOptions (${ms} ms)`);
@@ -325,6 +380,20 @@ export default function AccountLabPage() {
                         Cancel
                     </button>
                 )}
+                <button
+                    onClick={copyLog}
+                    disabled={log.length === 0}
+                    className="px-4 py-2 rounded-xl border border-border text-sm disabled:opacity-50"
+                >
+                    {copied ? 'Copied' : 'Copy log'}
+                </button>
+                <button
+                    onClick={downloadLog}
+                    disabled={log.length === 0}
+                    className="px-4 py-2 rounded-xl border border-border text-sm disabled:opacity-50"
+                >
+                    Download .txt
+                </button>
                 <button
                     onClick={resetSession}
                     disabled={busy}

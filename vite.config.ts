@@ -1,12 +1,34 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import { execSync } from "node:child_process";
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // Load env file based on mode
   const env = loadEnv(mode, process.cwd(), '');
+
+  /**
+   * Build fingerprint, injected into the bundle.
+   *
+   * WHY: a browser tab holding a stale bundle produced a gate transcript that
+   * looked valid but came from pre-fix code. It took a string-by-string diff of
+   * dist/ to establish that. Stamping the build into the first line of every log
+   * makes a transcript self-identifying, so this can never be ambiguous again.
+   *
+   * Do NOT rely on external signals (dcOptions counts, timings) to infer which
+   * build ran — Telegram can change those whenever it likes.
+   */
+  let buildSha = 'unknown';
+  try {
+    buildSha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+    const dirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
+    if (dirty) buildSha += '-dirty';
+  } catch {
+    // A build outside a git checkout still works; it just cannot self-identify.
+  }
+  const buildTime = new Date().toISOString();
 
   return {
     server: {
@@ -85,6 +107,9 @@ export default defineConfig(({ mode }) => {
       // secrecy. See ARCHITECTURE-V3 section 14 — do NOT remove these.
       'import.meta.env.TELEGRAM_API_ID': JSON.stringify(env.TELEGRAM_API_ID),
       'import.meta.env.TELEGRAM_API_HASH': JSON.stringify(env.TELEGRAM_API_HASH),
+      // Build fingerprint — see the note above. Never secret.
+      '__BUILD_SHA__': JSON.stringify(buildSha),
+      '__BUILD_TIME__': JSON.stringify(buildTime),
       // NOTE: no Telegram credentials are exposed to the client.
       // TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID have always been server-only.
       // TELEGRAM_API_ID / TELEGRAM_API_HASH were briefly exposed here for an

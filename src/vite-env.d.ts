@@ -15,3 +15,11 @@ declare global {
         process: any;
     }
 }
+
+/**
+ * Build fingerprint, injected by vite.config.ts `define`.
+ * Stamped into the first line of every gate log so a transcript can never be
+ * ambiguous about which build produced it.
+ */
+declare const __BUILD_SHA__: string;
+declare const __BUILD_TIME__: string;

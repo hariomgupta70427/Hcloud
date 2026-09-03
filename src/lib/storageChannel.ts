@@ -115,12 +115,12 @@ export async function resolveStorageChannel(
             const marker = await readMarker(tg, storedId);
             if (marker) {
                 const full = await tg.getFullChat(storedId);
-                log(`reused existing channel ${storedId} (stored id, marker v${marker.schemaVersion} ok)`);
+                log(`PATH=stored-id  reused existing channel ${storedId} (marker v${marker.schemaVersion} validated)`);
                 return { id: storedId, title: full.title ?? title, marker, origin: 'reused-stored-id' };
             }
             // The id resolves but is not ours (or the marker was unpinned). Fall
             // through to discovery rather than trusting it.
-            log(`stored channel id ${storedId} has no valid marker — rediscovering`);
+            log(`stored channel id ${storedId} has NO valid pinned marker — not ours, rediscovering`);
         } catch (err) {
             log(`stored channel id ${storedId} did not resolve (${err instanceof Error ? err.message : String(err)}) — rediscovering`);
         }
@@ -134,7 +134,7 @@ export async function resolveStorageChannel(
             const marker = await readMarker(tg, peer.id);
             if (!marker) continue;
             await kvSet(STORED_ID_KEY, peer.id);
-            log(`reused existing channel ${peer.id} (adopted via pinned marker, installation ${marker.installationId.slice(0, 8)})`);
+            log(`PATH=adopted-via-marker  reused existing channel ${peer.id} (pinned marker v${marker.schemaVersion}, installation ${marker.installationId.slice(0, 8)})`);
             return { id: peer.id, title: peer.title, marker, origin: 'adopted-via-marker' };
         } catch {
             // A channel we cannot read the pinned message of is not ours.
@@ -151,7 +151,7 @@ export async function resolveStorageChannel(
     const msg = await tg.sendText(created.id, text);
     await tg.pinMessage({ chatId: created.id, message: msg.id });
     await kvSet(STORED_ID_KEY, created.id);
-    log(`created channel ${created.id} (marker v${marker.schemaVersion} pinned, installation ${marker.installationId.slice(0, 8)})`);
+    log(`PATH=created  created channel ${created.id} (marker v${marker.schemaVersion} pinned, installation ${marker.installationId.slice(0, 8)})`);
     return { id: created.id, title: created.title, marker, origin: 'created' };
 }
 
