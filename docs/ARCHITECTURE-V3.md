@@ -311,6 +311,34 @@ Designed now so encrypted files can be added later **without changing the layout
 
 ### 4.4 Hashing and dedupe 🔒
 
+**The Merkle root is over PLAINTEXT. Decided 2026-09-03.**
+
+The root doubles as the dedupe id, so it becomes a permanent format commitment the moment any
+digest is stored. Reasoning:
+
+- It verifies the property that matters — bytes out equal bytes in. A ciphertext root would still
+  pass if decryption were broken, certifying storage while serving garbage.
+- The usual objection, that equal plaintext roots reveal two users hold the same file, does not
+  apply: there is no shared index to correlate against, because each user's index lives in their own
+  storage channel (§5.1). Dedupe is intra-user by construction.
+- AES-256-CTR preserves length and offsets (§4.3), so plaintext blocks stay aligned to the 1 MiB
+  read chunk. Nothing structural is lost.
+- Digests written before encryption exists stay valid after it arrives — they were always plaintext
+  roots. No silent invalidation.
+
+What this gives up, and how it is recovered: a plaintext root cannot verify stored bytes without
+decrypting them. That is the job of the out-of-band per-block integrity tags in §4.3. Tags detect
+ciphertext tampering; the root proves the plaintext round-tripped. Two mechanisms, two properties.
+
+**Consequence for the read path: once encryption exists, read-back MUST decrypt before hashing.**
+Hashing ciphertext against a plaintext root would report corruption on every encrypted file.
+
+**`hashBlockSize` is recorded in every manifest** alongside `schemaVersion` and `hashDomain`. The
+same file hashed at a different block size yields a different root, so storing the size makes a
+future change a detectable migration rather than silent mismatches against every digest already
+written. `assertComparable()` refuses to compare across either.
+
+
 - SHA-256 per 1 MiB plaintext block; the file's content hash is the **Merkle root** of the block
   hashes.
 - Chosen because WebCrypto cannot hash incrementally — per-block hashing is streaming-friendly,
