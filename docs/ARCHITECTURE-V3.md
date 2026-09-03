@@ -128,7 +128,8 @@ ISP condition.
 Residual risk, not yet retired: this was measured from Node. A browser adds no CORS restriction to
 the WebSocket handshake itself, but it does enforce the CSP `connect-src` allowlist (see R2), and
 the DC's response to a **real MTProto handshake** over that socket is still unverified — only TCP
-+ WS upgrade is proven. Confirm the full auth-key exchange in Task 2.0.
++ WS upgrade is proven. Confirmed in Task 2.0 - see section 17. Note that `help.getConfig`
+succeeding is NOT evidence of authorisation; it only proves a valid auth key.
 
 ### R2 — CSP needs `wasm-unsafe-eval`
 
@@ -724,12 +725,19 @@ public path. Scheduled with the `bot`-mode demo hardening.
   Telegram (R4). The Telegram forwarding path itself is Stage 2 work.
 
 ### Stage 2 — Account mode
-**Task 2.0:** WSS transport is already proven reachable from all five DCs and from the production
-origin (R1). What remains is the **full MTProto auth-key exchange over that socket, in a real
-browser, under the production CSP** — do that spike before anything else is built.
+**Task 2.0 — PARTIALLY EVIDENCED. See §17 for the transcripts and the three gaps.**
+WSS transport was already proven reachable from all five DCs and from the production origin (R1).
+Task 2.0 adds the **full MTProto auth-key exchange in a real browser under the production CSP**,
+QR login with 2FA, an authorisation assertion, and title-independent channel resolution.
 Then: `@hcloud/core` extraction → SharedWorker client → QR login (`auth.exportLoginToken`) with
 phone+code and SRP fallback → auto-create the "HCloud Storage" channel → oplog/snapshot index →
 resumable chunked upload → Service Worker streaming → remux hook.
+
+**Correction, 2026-09-03: `help.getConfig` is NOT proof of authentication.** An earlier version of
+this plan and of the lab page called it an "authenticated API call". It is not. It requires only a
+valid auth key and working transport encryption, and says nothing about the user being signed in.
+Evidence: in one run it succeeded at 16:43:48 while sign-in did not happen until 16:46:07. Anywhere
+authorisation must be proven, the assertion is `users.getFullUser(self)`, which does require it.
 
 ### Stage 3 — Product polish
 Virtualized 10 k-file lists, folder upload, drag-to-move, multi-select, URL-addressable folders,
@@ -985,3 +993,172 @@ Caveat to check before trusting the result: a message the user posted to that ch
 by hand would also appear as an orphan. Reconciliation must report candidates for
 review, not delete them automatically.
 
+---
+
+## 17. Task 2.0 gate - browser MTProto
+
+**Build under test: `820bdec`, built 2026-09-03T09:39:23.957Z, marker schemaVersion 1.**
+Every transcript below carries that fingerprint on its first line, so each one identifies the
+build that produced it. This exists because an earlier transcript came from a stale browser tab
+holding pre-fix code and read as valid; establishing that took a string-by-string diff of `dist/`.
+External signals (dcOptions counts, timings) are corroboration at best and are never used to infer
+which build ran.
+
+### 17.1 Verification boundary - read this before trusting anything below
+
+**Everything in section 17 was verified locally, in a real browser, against the real production
+CSP** (served by `scripts/serve-with-production-csp.mjs`, which reads the policy live from
+`vercel.json` so it cannot drift from what deploys).
+
+**Nothing in section 17 was verified on the deployed origin.** The Vercel preview sits behind
+deployment protection and 302s to SSO, so it could not be driven. The untested difference is the
+origin string only - R1 measured that Telegram's WSS endpoint accepts any `Origin`, including the
+production domain - but that is an inference, not a measurement. Do not describe Task 2.0 as
+verified in production.
+
+### 17.2 What the CSP needed
+
+```
+script-src   + 'wasm-unsafe-eval'          mtcute's crypto is WebAssembly
+connect-src  + wss://*.web.telegram.org    MTProto transport
+```
+
+`'wasm-unsafe-eval'` only - deliberately not the blanket `unsafe-eval` that made the earlier gramjs
+browser attempt untenable. `worker-src blob:` was added and then **removed**: Vite emits the
+SharedWorker as a real same-origin asset, so `worker-src 'self'` is sufficient, verified by
+re-running the gate with `blob:` dropped.
+
+### 17.3 Run 1 - created branch (channel deleted beforehand)
+
+Exercises: reused-auth-key branch, 2FA, authorisation assertion, **`PATH=created`**.
+
+```
+# build 820bdec - built 2026-09-03T09:39:23.957Z - marker schemaVersion 1
+# captured 2026-09-03T12:57:46.445Z
+
+[PASS] SharedWorker available - one client, shared across tabs
+[PASS] Auth key + transport - reused persisted auth key (193 ms - no handshake performed)
+[PASS] Encrypted MTProto call (help.getConfig) - proves a valid auth key, NOT authorisation
+       - help.getConfig returned 19 dcOptions (informational)
+[PASS] QR login (+ 2FA if enabled) - signed in as Anonymous
+[PASS] Authorisation proven (users.getFullUser self) - users.getFullUser(self) -> id 1734483460
+[PASS] Storage channel (resolved by pinned marker, never by title) - created, id -1004332910998
+
+12:56:40.286  build 820bdec - built 2026-09-03T09:39:23.957Z - marker schemaVersion 1
+12:56:40.289  persisted auth key found in IndexedDB - this run will REUSE it, not perform a handshake
+12:56:40.289  SharedWorker connected (hcloud-mtproto)
+12:56:40.289  calling help.getConfig
+12:56:40.483  OK: reused persisted auth key, help.getConfig -> 19 dcOptions (193 ms)
+12:56:40.488  primary DC before login: 5
+12:56:40.697  QR updated, expires 12:57:11
+12:57:11.203  SESSION_PASSWORD_NEEDED - login token accepted, 2FA required
+12:57:11.447  password hint received
+12:57:20.476  OK: signed in as Anonymous
+12:57:20.704  OK: authorisation proven - users.getFullUser(self) returned id 1734483460
+12:57:20.707  primary DC after login: 5
+12:57:36.066  PATH=created  created channel -1004332910998 (marker v1 pinned, installation 34e67665)
+```
+
+Notes: the 2FA prompt appeared 244 ms after the login token was accepted, and the hint arrived
+244 ms after that - the field renders before the hint, which is the fix for the earlier 3-4 second
+blank screen. "Anonymous" is the account's genuine `firstName`: there is no such placeholder
+anywhere in `src/` (`grep -rn "Anonymous" src/` returns nothing), and the numeric id is now printed
+alongside it so this cannot be ambiguous again.
+
+### 17.4 Runs 2 and 3 - steps 1-3 only, QR never scanned
+
+Both runs stop at "waiting for you to scan". They evidence the reused-auth-key branch, the
+encrypted call, and QR issuance and refresh - nothing after that.
+
+```
+# captured 2026-09-03T12:58:59.293Z
+[PASS] Auth key + transport - reused persisted auth key (194 ms - no handshake performed)
+[PASS] Encrypted MTProto call - help.getConfig returned 21 dcOptions (informational)
+[    ] QR login (+ 2FA if enabled) - waiting for you to scan
+[    ] Authorisation proven (users.getFullUser self)
+[    ] Storage channel (resolved by pinned marker, never by title)
+
+12:58:24.352  QR updated, expires 12:58:55
+12:58:55.222  QR updated, expires 12:59:26     <- 30 s refresh, unscanned token replaced
+```
+
+```
+# captured 2026-09-03T13:00:17.365Z
+[PASS] Auth key + transport - reused persisted auth key (190 ms - no handshake performed)
+[PASS] Encrypted MTProto call - help.getConfig returned 19 dcOptions (informational)
+[    ] QR login - waiting for you to scan
+13:00:08.677  QR updated, expires 13:00:39
+```
+
+**dcOptions moved 19 -> 21 -> 19 across three runs minutes apart on one build.** That is the
+concrete justification for treating it as informational: it is a server-side detail Telegram changes
+at will, and any logic keyed on it would be flaky. Recorded here as the evidence, not as a metric.
+
+### 17.5 Run 4 - stored-id branch (continuation of run 3)
+
+Exercises: **`PATH=stored-id`**, the fast path where a stored channel id is validated against its
+pinned marker before being trusted.
+
+```
+# captured 2026-09-03T13:00:57.598Z
+
+[PASS] SharedWorker available - one client, shared across tabs
+[PASS] Auth key + transport - reused persisted auth key (190 ms - no handshake performed)
+[PASS] Encrypted MTProto call (help.getConfig) - proves a valid auth key, NOT authorisation
+       - help.getConfig returned 19 dcOptions (informational)
+[PASS] QR login (+ 2FA if enabled) - signed in as Anonymous
+[PASS] Authorisation proven (users.getFullUser self) - users.getFullUser(self) -> id 1734483460
+[PASS] Storage channel - reused-stored-id, id -1004332910998
+
+13:00:08.261  build 820bdec - built 2026-09-03T09:39:23.957Z - marker schemaVersion 1
+13:00:08.267  persisted auth key found in IndexedDB - this run will REUSE it, not perform a handshake
+13:00:08.457  OK: reused persisted auth key, help.getConfig -> 19 dcOptions (190 ms)
+13:00:08.460  primary DC before login: 5
+13:00:08.677  QR updated, expires 13:00:39
+13:00:39.211  SESSION_PASSWORD_NEEDED - login token accepted, 2FA required
+13:00:39.450  password hint received
+13:00:48.687  OK: signed in as Anonymous
+13:00:48.953  OK: authorisation proven - users.getFullUser(self) returned id 1734483460
+13:00:48.954  primary DC after login: 5
+13:00:49.602  PATH=stored-id  reused existing channel -1004332910998 (marker v1 validated)
+```
+
+**Run 4 is run 3 continued, not a separate run.** Its log prefix is byte-identical to run 3's -
+same `13:00:08.261` fingerprint line, same `13:00:08.677` QR line. Run 3's transcript was captured
+mid-run at 13:00:17; the scan happened at 13:00:39 and the transcript was captured again at
+13:00:57. Recorded because it changes what the pair proves: one completed login, not two.
+
+### 17.6 What is NOT evidenced - three gaps
+
+These are implemented and believed correct, but **no transcript above demonstrates them**. They are
+not passes.
+
+| Claim | Status | Why the transcripts do not show it |
+|---|---|---|
+| **Fresh auth-key exchange** | not evidenced on `820bdec` | All four runs say "reused persisted auth key". The fresh branch was measured at 2536 ms on an earlier, pre-fingerprint build; on this build it is unproven. Force it with **Reset local session**, which must log "no persisted auth key ... FRESH auth-key exchange". |
+| **Session revocation handling** | not evidenced | No run contains a `REVOKED:` line. Run 3, intended as the revocation run, only reached "waiting for you to scan". Reproduce: sign in, then terminate the session from Telegram to Devices with the page open, then run again. |
+| **`PATH=adopted-via-marker`** | not evidenced | Run 1 gave `PATH=created`, run 4 gave `PATH=stored-id`. Adoption only fires when the stored id is absent but a marked channel exists - after a revocation wipe, or on a second device. It is the one path that proves title-independent rediscovery, so it matters most. |
+
+The third gap follows from the second: the revocation wipe is what clears the stored channel id, so
+without a revocation run there is nothing to rediscover.
+
+### 17.7 What IS evidenced
+
+- Browser MTProto works under the production CSP: an encrypted `help.getConfig` returned real
+  `dcOptions` in 190-194 ms across four independent runs.
+- QR login completes, including **2FA via mtcute's own SRP** (`account.getPassword` ->
+  `computeSrpParams` -> `auth.checkPassword`). The password is never sent to Telegram, never sent to
+  us, never logged, never stored.
+- Authorisation is separately proven by `users.getFullUser(self)` -> id `1734483460`.
+- Channel resolution never matches on title. Two of three paths are demonstrated.
+- One client for the browser, owned by the SharedWorker. **The two-tab single-client assertion
+  remains Stage 2.2's gate item and is not claimed here.**
+
+### 17.8 Lesson recorded
+
+The gate initially could not fail. It reported "handshake completed in 88 ms" on a run that
+performed no handshake, because timing cannot distinguish a reused auth key from a fresh exchange.
+The fix was to check for a persisted key *before* connecting and label the two cases differently.
+
+Generalised: **a step whose pass condition is satisfied by doing nothing is not a gate.** Prefer a
+precondition you can read directly over a signal you have to interpret.
