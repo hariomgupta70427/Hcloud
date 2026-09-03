@@ -83,6 +83,11 @@ export default function AccountLabPage() {
     const [revoked, setRevoked] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
     const abortRef = useRef<AbortController | null>(null);
+    // QR token bookkeeping, so the log shows the refresh cycle rather than leaving a
+    // gap that reads like a token accepted after it expired.
+    const qrTokenSeq = useRef(0);
+    const qrScanned = useRef(false);
+    const qrExpiryTimer = useRef<number | null>(null);
 
     // ── 2FA state ──────────────────────────────────────────────────────────────
     // The plaintext password lives ONLY in `pwValue` while the user is typing, and
@@ -177,6 +182,12 @@ export default function AccountLabPage() {
         setPwVerifying(false);
         setPwValue('');
         pwResolve.current = null;
+        qrTokenSeq.current = 0;
+        qrScanned.current = false;
+        if (qrExpiryTimer.current !== null) {
+            clearTimeout(qrExpiryTimer.current);
+            qrExpiryTimer.current = null;
+        }
 
         try {
             // ── 1. SharedWorker ────────────────────────────────────────────────
@@ -266,11 +277,33 @@ export default function AccountLabPage() {
                     QRCode.toDataURL(url, { width: 288, margin: 2 })
                         .then(setQrDataUrl)
                         .catch(() => setQrDataUrl(null));
-                    say(`QR updated, expires ${expires.toISOString().slice(11, 19)}`);
+
+                    // Number each token and announce when one lapses unscanned.
+                    // Without this the log read "expires 13:46:15" then an acceptance
+                    // at 13:46:17, which looks like a token accepted after expiry —
+                    // when in fact a fresh token had been issued in between.
+                    const n = ++qrTokenSeq.current;
+                    const expiresAt = expires.getTime();
+                    say(`QR token #${n} issued, expires ${expires.toISOString().slice(11, 19)}`);
+
+                    if (qrExpiryTimer.current !== null) clearTimeout(qrExpiryTimer.current);
+                    qrExpiryTimer.current = window.setTimeout(() => {
+                        // Only report a lapse if this token is still the newest and
+                        // nothing has been accepted.
+                        if (qrTokenSeq.current === n && !qrScanned.current) {
+                            say(`QR token #${n} expired unscanned — requesting a new one`);
+                        }
+                    }, Math.max(0, expiresAt - Date.now()) + 250);
                 },
                 onQrScanned: () => {
                     // Drop the QR and say something immediately: there can be
                     // several seconds between scan and the next screen.
+                    qrScanned.current = true;
+                    if (qrExpiryTimer.current !== null) {
+                        clearTimeout(qrExpiryTimer.current);
+                        qrExpiryTimer.current = null;
+                    }
+                    say(`QR token #${qrTokenSeq.current} accepted by Telegram`);
                     setQrDataUrl(null);
                     setScanState('Scan accepted — completing sign-in…');
                     say('scan accepted — login token confirmed, completing sign-in');
@@ -328,7 +361,18 @@ export default function AccountLabPage() {
                 setChannel(null);
                 setQrDataUrl(null);
                 setPwOpen(false);
-                setSteps(INITIAL);
+                // Do NOT blank the steps. Resetting them to INITIAL made the exported
+                // transcript header show every step empty while its body showed the
+                // passes that actually happened. Mark the step that was running as
+                // failed and leave earlier passes intact, so the header is honest by
+                // construction rather than by snapshotting.
+                setSteps((prev) => {
+                    const i = prev.findIndex((st) => st.state === 'running');
+                    if (i === -1) return prev;
+                    return prev.map((st, idx) =>
+                        idx === i ? { ...st, state: 'fail', detail: msg } : st
+                    );
+                });
                 // Do NOT reload: the message must stay on screen.
                 await resetLocalSession({ reload: false });
                 return;
@@ -346,6 +390,10 @@ export default function AccountLabPage() {
             abortRef.current = null;
             pwResolve.current = null;
             setPwValue('');
+            if (qrExpiryTimer.current !== null) {
+                clearTimeout(qrExpiryTimer.current);
+                qrExpiryTimer.current = null;
+            }
             setBusy(false);
         }
     };

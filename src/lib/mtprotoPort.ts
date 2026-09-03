@@ -1,5 +1,17 @@
 import { TelegramClient, TelegramWorkerPort } from '@mtcute/web';
 import { kvDestroy } from '@/lib/accountState';
+import { forgetClearedChannels } from '@/lib/storageChannel';
+
+/**
+ * Custom methods exposed by src/workers/mtprotoWorker.ts.
+ *
+ * The index signature is required by mtcute's WorkerCustomMethods constraint, which
+ * types the method table as a string-keyed record.
+ */
+interface MtprotoCustom {
+    resetSession: () => Promise<{ rebuilt: true }>;
+    [name: string]: (...args: never[]) => Promise<unknown>;
+}
 
 /**
  * Page-side handle to the single MTProto client in the SharedWorker.
@@ -30,13 +42,13 @@ export function isSharedWorkerSupported(): boolean {
     return typeof SharedWorker !== 'undefined';
 }
 
-let cached: { port: TelegramWorkerPort<{}>; tg: TelegramClient } | null = null;
+let cached: { port: TelegramWorkerPort<MtprotoCustom>; tg: TelegramClient } | null = null;
 
 /**
  * Connect to the worker. Idempotent per tab — repeated calls return the same
  * port, because each new port counts as another connection on the worker side.
  */
-export function getMtprotoClient(): { port: TelegramWorkerPort<{}>; tg: TelegramClient } {
+export function getMtprotoClient(): { port: TelegramWorkerPort<MtprotoCustom>; tg: TelegramClient } {
     if (cached) return cached;
     if (!isSharedWorkerSupported()) throw new SharedWorkerUnavailableError();
 
@@ -47,7 +59,7 @@ export function getMtprotoClient(): { port: TelegramWorkerPort<{}>; tg: Telegram
         name: 'hcloud-mtproto',
     });
 
-    const port = new TelegramWorkerPort<{}>({ worker });
+    const port = new TelegramWorkerPort<MtprotoCustom>({ worker });
     // Wrapping the port rather than constructing a client with credentials: the
     // credentials and the connection live in the worker, not here.
     const tg = new TelegramClient({ client: port });
@@ -136,19 +148,33 @@ export function isSessionRevoked(err: unknown): boolean {
  * within a page's lifetime — a reload is the honest way to get a clean one.
  */
 export async function resetLocalSession(opts: { reload?: boolean } = {}): Promise<void> {
-    const reload = opts.reload ?? true;
+    const reload = opts.reload ?? false;
+    const existing = cached;
 
-    if (cached) {
+    // Drop the local handle FIRST, so nothing reuses a port whose client is about to
+    // be replaced.
+    cached = null;
+
+    if (existing) {
         try {
-            // Terminates the client inside the worker, releasing the auth key.
-            await cached.port.unsafeForceDestroy();
+            // The worker disposes its client, deletes its own IndexedDB, and mounts a
+            // fresh client — all in the same worker, under the same name.
+            //
+            // Storage deletion is the worker's job because it owns the IDB connection;
+            // deleting from here while the client holds it open blocks.
+            //
+            // The response is sent by the handler being torn down, so it may not
+            // arrive. That is not an error: the signal that matters is that the next
+            // connection lands on a fresh client.
+            await existing.port.invokeCustom('resetSession');
         } catch {
-            /* it may already be gone; deletion below is what matters */
+            /* see above — teardown is best-effort by design */
         }
-        cached = null;
     }
 
-    await Promise.all([deleteDb(MTPROTO_DB_NAME), kvDestroy()]);
+    // Non-session local state: the channel id cache and the discovery resume cache.
+    await kvDestroy();
+    forgetClearedChannels();
 
     if (reload) window.location.reload();
 }
