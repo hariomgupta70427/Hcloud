@@ -17,11 +17,11 @@ import { kvGet, kvSet } from '@/lib/accountState';
  *      pinned message.
  *   3. create, post the marker, pin it, store the id.
  *
- * THE DANGEROUS EDGE, and why this file is defensive: step 3 must run only on a
- * genuine no-match. If enumeration is cut short — a FLOOD_WAIT, a dropped
- * connection, an unreadable channel — falling through to "create" gives the user a
- * new empty channel while their files sit invisible in the old one. That is silent
- * data loss, so any incomplete scan is a hard stop instead.
+ * THE DANGEROUS EDGE: step 3 must run only on a genuine no-match. If enumeration is
+ * cut short — a FLOOD_WAIT, a dropped connection, an unreadable channel — falling
+ * through to "create" gives the user a new empty channel while their files sit
+ * invisible in the old one. That is silent data loss, so an incomplete scan is a
+ * hard stop, and retries are bounded and resumable rather than open-ended.
  */
 
 /** Bump when the marker payload shape changes. */
@@ -32,6 +32,19 @@ export const CHANNEL_SCHEMA_VERSION = 1;
  * the title is cosmetic and may be anything.
  */
 const MARKER_PREFIX = 'HCLOUD-STORAGE-MARKER';
+
+/** Attempts at a full resolution before giving up with a terminal error. */
+const MAX_ATTEMPTS = 3;
+
+/**
+ * Longest FLOOD_WAIT we will sit through silently.
+ *
+ * Telegram can return waits measured in hours. "Honour it" inside a bounded loop
+ * would then mean the UI sits silent for an hour — the same silent hang the bounded
+ * retry exists to prevent, just wearing a different hat. Above this, stop and show
+ * the real number so the user can decide.
+ */
+const FLOOD_WAIT_CEILING_SEC = 45;
 
 export interface ChannelMarker {
     schemaVersion: number;
@@ -48,16 +61,37 @@ export interface ResolvedChannel {
 }
 
 /**
- * Thrown when discovery could not complete. Deliberately NOT a no-match: the
- * caller must surface this and let the user retry, never create a second channel.
+ * One attempt could not complete. Internal: callers see either a resolution, a
+ * ChannelRateLimitedError, or ChannelDiscoveryFailedError.
  */
-export class ChannelDiscoveryIncompleteError extends Error {
+class DiscoveryIncomplete extends Error {
     constructor(message: string, readonly cause?: unknown) {
+        super(message);
+        this.name = 'DiscoveryIncomplete';
+    }
+}
+
+/** Rate-limited beyond the ceiling. Terminal for this run, retryable later. */
+export class ChannelRateLimitedError extends Error {
+    constructor(readonly seconds: number) {
+        const mins = Math.ceil(seconds / 60);
         super(
-            `${message}. Not creating a new channel: your existing files could be in a ` +
-            `channel this scan did not reach. Try again in a moment.`
+            `Telegram is rate-limiting this account for ${seconds}s (~${mins} min). ` +
+            `Not creating a new channel, and not waiting silently — try again in ${mins} minute(s).`
         );
-        this.name = 'ChannelDiscoveryIncompleteError';
+        this.name = 'ChannelRateLimitedError';
+    }
+}
+
+/** Every bounded attempt failed. Terminal, and explicitly not a no-match. */
+export class ChannelDiscoveryFailedError extends Error {
+    constructor(readonly attempts: number, readonly cause?: unknown) {
+        super(
+            `Could not determine your storage channel after ${attempts} attempts. ` +
+            `Not creating a new one: your existing files could be in a channel these ` +
+            `scans did not reach. Try again in a moment.`
+        );
+        this.name = 'ChannelDiscoveryFailedError';
     }
 }
 
@@ -67,8 +101,6 @@ function buildMarker(): { marker: ChannelMarker; text: string } {
         installationId: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
     };
-    // One line of human-readable context, then the machine payload. The payload is
-    // parsed; the prose is for whoever opens the channel in Telegram.
     const text =
         `${MARKER_PREFIX}\n` +
         `This channel stores HCloud files. Do not delete or unpin this message.\n` +
@@ -95,7 +127,6 @@ function parseMarker(text: string | null | undefined): ChannelMarker | null {
     return null;
 }
 
-/** Read a channel's pinned message and parse the marker, if any. */
 async function readMarker(tg: TelegramClient, peer: number): Promise<ChannelMarker | null> {
     const full = await tg.getFullChat(peer);
     const pinnedId = full.pinnedMsgId;
@@ -106,13 +137,22 @@ async function readMarker(tg: TelegramClient, peer: number): Promise<ChannelMark
 
 const STORED_ID_KEY = 'storageChannelId';
 
-/** A marker read failure that is transient — the scan must not be trusted after it. */
+/** FLOOD_WAIT seconds, or null if this is not a flood wait. */
+function floodWaitSeconds(err: unknown): number | null {
+    const e = err as { text?: unknown; seconds?: unknown };
+    if (typeof e?.text === 'string' && e.text.startsWith('FLOOD_WAIT')) {
+        return typeof e.seconds === 'number' ? e.seconds : 0;
+    }
+    return null;
+}
+
+/** A failure after which the scan must not be trusted. */
 function isTransient(err: unknown): boolean {
     const text = (err as { text?: unknown })?.text;
     if (typeof text !== 'string') {
         // A non-RPC failure (network, aborted) is transient by default. Being
-        // pessimistic here is correct: the cost of a false "transient" is one retry,
-        // the cost of a false "permanent" is a duplicate channel.
+        // pessimistic is correct: a false "transient" costs one bounded retry, a
+        // false "permanent" costs a duplicate channel.
         return true;
     }
     if (text.startsWith('FLOOD_WAIT')) return true;
@@ -122,6 +162,25 @@ function isTransient(err: unknown): boolean {
     return false;
 }
 
+/**
+ * Channels checked this session and confirmed NOT ours.
+ *
+ * This is what makes a retry resume rather than restart. Each marker read is two
+ * RPCs, so re-checking every channel on attempt 2 would multiply exactly the call
+ * volume that provoked the FLOOD_WAIT being recovered from. Dialog enumeration
+ * itself is re-run — it is paginated and roughly one RPC per 100 dialogs, so it is
+ * cheap by comparison and cannot be resumed mid-cursor.
+ *
+ * Session-scoped on purpose: "no marker" can stop being true if the user pins one,
+ * so this must not outlive the page.
+ */
+const clearedChannels = new Set<number>();
+
+/** Drop the resume cache. Called by session reset so a fresh login rescans. */
+export function forgetClearedChannels(): void {
+    clearedChannels.clear();
+}
+
 export interface ResolveOpts {
     /** Title used ONLY when creating. Never used to find an existing channel. */
     title?: string;
@@ -129,18 +188,15 @@ export interface ResolveOpts {
     log?: (line: string) => void;
 }
 
-/**
- * Resolve the storage channel, creating it only on a genuine no-match.
- * Never matches on title.
- */
-export async function resolveStorageChannel(
-    tg: TelegramClient,
-    opts: ResolveOpts = {}
-): Promise<ResolvedChannel> {
-    const title = opts.title ?? 'HCloud Storage';
-    const log = opts.log ?? (() => {});
+type Log = (line: string) => void;
 
-    // ── 1. Fast path: an id we already stored, validated by its marker ─────────
+/** One resolution attempt. Throws DiscoveryIncomplete if it could not finish. */
+async function attemptResolve(
+    tg: TelegramClient,
+    title: string,
+    log: Log
+): Promise<ResolvedChannel> {
+    // 1. Fast path: an id we already stored, validated by its marker.
     const storedId = await kvGet<number>(STORED_ID_KEY);
     if (typeof storedId === 'number') {
         try {
@@ -150,64 +206,70 @@ export async function resolveStorageChannel(
                 log(`PATH=stored-id  reused existing channel ${storedId} (marker v${marker.schemaVersion} validated)`);
                 return { id: storedId, title: full.title ?? title, marker, origin: 'reused-stored-id' };
             }
-            log(`stored channel id ${storedId} has NO valid pinned marker — not ours, rediscovering`);
+            log(`stored channel id ${storedId} has NO valid pinned marker - not ours, rediscovering`);
         } catch (err) {
+            // Do NOT rediscover on a transient failure: enumeration could fail too
+            // and we would create a duplicate of a channel we already had the id of.
             if (isTransient(err)) {
-                // Do NOT rediscover on a transient failure: enumeration could also
-                // fail and we would end up creating a duplicate of a channel we
-                // already know the id of.
-                throw new ChannelDiscoveryIncompleteError(
-                    `could not validate the known channel ${storedId}`, err
-                );
+                throw new DiscoveryIncomplete(`could not validate known channel ${storedId}`, err);
             }
-            log(`stored channel id ${storedId} did not resolve (${(err as Error)?.message ?? err}) — rediscovering`);
+            log(`stored channel id ${storedId} did not resolve permanently - rediscovering`);
         }
     }
 
-    // ── 2. New-device path: find OUR channel by its pinned marker ─────────────
+    // 2. New-device path: find OUR channel by its pinned marker.
     //
     // Narrowed to broadcast channels the user CREATED before any marker read.
-    // Calling readMarker on every dialog is two RPCs per chat, so an account with a
-    // few hundred chats would issue several hundred calls on first login — which is
-    // exactly what provokes the FLOOD_WAIT that turns this path into the data-loss
-    // path above. isCreator is available from the dialog we already have, so the
-    // filter is free.
+    // readMarker is two RPCs per channel, so checking every dialog would issue
+    // hundreds of calls on an account with hundreds of chats - precisely what
+    // provokes the FLOOD_WAIT that turns this into the data-loss path. isCreator
+    // comes free from the dialog already in hand.
     const candidates: Array<{ id: number; title: string }> = [];
     try {
         for await (const dialog of tg.iterDialogs({ archived: 'keep' })) {
             const peer = dialog.peer;
-            if (!('chatType' in peer)) continue;          // a User, not a chat
-            if (peer.chatType !== 'channel') continue;    // broadcast channels only
-            if (!peer.isCreator) continue;                // we always create our own
+            if (!('chatType' in peer)) continue;        // a User, not a chat
+            if (peer.chatType !== 'channel') continue;  // broadcast channels only
+            if (!peer.isCreator) continue;              // we always create our own
             candidates.push({ id: peer.id, title: peer.title });
         }
     } catch (err) {
-        // Enumeration cut short. Treating this as "no match" is what creates a
-        // second channel and orphans the user's files.
-        throw new ChannelDiscoveryIncompleteError('channel enumeration was cut short', err);
+        // Treating a cut-short enumeration as "no match" is what creates a second
+        // channel and orphans the user's files.
+        throw new DiscoveryIncomplete('channel enumeration was cut short', err);
     }
 
-    log(`enumerated dialogs: ${candidates.length} broadcast channel(s) created by this account`);
+    const fresh = candidates.filter((c) => !clearedChannels.has(c.id));
+    const skipped = candidates.length - fresh.length;
+    log(
+        `enumerated ${candidates.length} broadcast channel(s) created by this account` +
+        (skipped > 0 ? ` - skipping ${skipped} already checked this session` : '')
+    );
 
     const matches: Array<{ id: number; title: string; marker: ChannelMarker }> = [];
-    for (const c of candidates) {
+    for (const c of fresh) {
         try {
             const marker = await readMarker(tg, c.id);
-            if (marker) matches.push({ ...c, marker });
+            if (marker) {
+                matches.push({ ...c, marker });
+            } else {
+                // Confirmed not ours - remember, so a retry does not pay for it again.
+                clearedChannels.add(c.id);
+            }
         } catch (err) {
             if (isTransient(err)) {
-                // One unreadable candidate makes the whole scan inconclusive.
-                throw new ChannelDiscoveryIncompleteError(
-                    `could not read the pinned message of channel ${c.id}`, err
-                );
+                // One unreadable candidate makes the whole scan inconclusive. Progress
+                // so far is preserved in clearedChannels, so the retry resumes.
+                throw new DiscoveryIncomplete(`could not read pinned message of channel ${c.id}`, err);
             }
-            // Permanently unreadable (private, forbidden) — genuinely not ours.
+            // Permanently unreadable (private, forbidden) - genuinely not ours.
+            clearedChannels.add(c.id);
         }
     }
 
     if (matches.length > 0) {
-        // Deterministic tie-break on the marker's own createdAt rather than on id
-        // ordering, which relies on Telegram's id allocation staying monotonic.
+        // Tie-break on the marker's own createdAt rather than id ordering, which
+        // would rely on Telegram's id allocation staying monotonic.
         matches.sort((a, b) => {
             const ta = Date.parse(a.marker.createdAt);
             const tb = Date.parse(b.marker.createdAt);
@@ -217,12 +279,11 @@ export async function resolveStorageChannel(
         const chosen = matches[0];
 
         if (matches.length > 1) {
-            // Loud, because it means an earlier bug (or a manual copy) produced more
-            // than one storage channel and files may be split across them.
-            log(`WARNING: ${matches.length} marked channels found — adopting the OLDEST and ignoring the rest.`);
-            log(`WARNING: adopted ${chosen.id} (created ${chosen.marker.createdAt}).`);
+            // Loud: more than one means an earlier bug or a manual copy split the
+            // user's files across channels.
+            log(`WARNING: ${matches.length} marked channels found - adopting the OLDEST, ignoring the rest.`);
             for (const m of matches.slice(1)) {
-                log(`WARNING: IGNORED marked channel ${m.id} "${m.title}" (created ${m.marker.createdAt}, installation ${m.marker.installationId.slice(0, 8)}) — it may contain files.`);
+                log(`WARNING: IGNORED marked channel ${m.id} "${m.title}" (created ${m.marker.createdAt}, installation ${m.marker.installationId.slice(0, 8)}) - it may contain files.`);
             }
         }
 
@@ -231,12 +292,12 @@ export async function resolveStorageChannel(
         return { id: chosen.id, title: chosen.title, marker: chosen.marker, origin: 'adopted-via-marker' };
     }
 
-    // ── 3. Create — reached only after a COMPLETE scan found nothing ───────────
-    log(`no marked channel among ${candidates.length} candidate(s) — creating one`);
+    // 3. Create - reached only after a COMPLETE scan found nothing.
+    log(`no marked channel among ${candidates.length} candidate(s) - creating one`);
     const { marker, text } = buildMarker();
     const created = await tg.createChannel({
         title,
-        description: 'HCloud file storage. Managed automatically — do not delete.',
+        description: 'HCloud file storage. Managed automatically - do not delete.',
     });
     const msg = await tg.sendText(created.id, text);
     await tg.pinMessage({ chatId: created.id, message: msg.id });
@@ -245,7 +306,57 @@ export async function resolveStorageChannel(
     return { id: created.id, title: created.title, marker, origin: 'created' };
 }
 
+/**
+ * Resolve the storage channel. Bounded, resumable, and never silent.
+ *
+ * Outcomes are exactly four, all visible:
+ *   - resolved (created / stored-id / adopted-via-marker)
+ *   - ChannelRateLimitedError     flood wait above the ceiling, with the real number
+ *   - ChannelDiscoveryFailedError attempts exhausted, terminal
+ *   - a permanent non-transient error, propagated
+ *
+ * There is deliberately no path that waits indefinitely, and none that creates a
+ * channel after an incomplete scan.
+ */
+export async function resolveStorageChannel(
+    tg: TelegramClient,
+    opts: ResolveOpts = {}
+): Promise<ResolvedChannel> {
+    const title = opts.title ?? 'HCloud Storage';
+    const log = opts.log ?? (() => {});
+    let last: unknown;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+            return await attemptResolve(tg, title, log);
+        } catch (err) {
+            if (!(err instanceof DiscoveryIncomplete)) throw err; // permanent - surface it
+            last = err.cause ?? err;
+
+            const flood = floodWaitSeconds(err.cause);
+            if (flood !== null && flood > FLOOD_WAIT_CEILING_SEC) {
+                // Do not sit silent for minutes or hours. Show the number.
+                log(`attempt ${attempt}/${MAX_ATTEMPTS} hit FLOOD_WAIT ${flood}s - above the ${FLOOD_WAIT_CEILING_SEC}s ceiling, stopping`);
+                throw new ChannelRateLimitedError(flood);
+            }
+
+            if (attempt === MAX_ATTEMPTS) {
+                log(`attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.message}) - no attempts left`);
+                break;
+            }
+
+            // Honour a short flood wait exactly; otherwise back off.
+            const waitMs = flood !== null ? flood * 1000 : Math.min(1000 * 2 ** (attempt - 1), 8000);
+            log(`attempt ${attempt}/${MAX_ATTEMPTS} incomplete (${err.message}) - retrying in ${Math.round(waitMs / 1000)}s, resuming past ${clearedChannels.size} cleared channel(s)`);
+            await new Promise((r) => setTimeout(r, waitMs));
+        }
+    }
+
+    throw new ChannelDiscoveryFailedError(MAX_ATTEMPTS, last);
+}
+
 /** Forget the cached channel id. Used by session reset and revocation. */
 export async function forgetStorageChannel(): Promise<void> {
     await kvSet(STORED_ID_KEY, undefined);
+    forgetClearedChannels();
 }
