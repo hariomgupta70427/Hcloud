@@ -181,6 +181,16 @@ export function forgetClearedChannels(): void {
     clearedChannels.clear();
 }
 
+/**
+ * Read-only view of the resume cache, for tests.
+ *
+ * Exported because the invariant worth testing is "a failed marker read leaves the
+ * channel uncleared", and that is only observable through this set.
+ */
+export function clearedChannelIds(): number[] {
+    return [...clearedChannels];
+}
+
 export interface ResolveOpts {
     /** Title used ONLY when creating. Never used to find an existing channel. */
     title?: string;
@@ -247,22 +257,33 @@ async function attemptResolve(
     );
 
     const matches: Array<{ id: number; title: string; marker: ChannelMarker }> = [];
+    // Candidates we could not definitively check. A scan that leaves any of these
+    // behind is NOT a no-match, so it must not reach the create branch.
+    const unchecked: number[] = [];
+
     for (const c of fresh) {
+        let marker: ChannelMarker | null;
         try {
-            const marker = await readMarker(tg, c.id);
-            if (marker) {
-                matches.push({ ...c, marker });
-            } else {
-                // Confirmed not ours - remember, so a retry does not pay for it again.
-                clearedChannels.add(c.id);
-            }
+            marker = await readMarker(tg, c.id);
         } catch (err) {
             if (isTransient(err)) {
-                // One unreadable candidate makes the whole scan inconclusive. Progress
-                // so far is preserved in clearedChannels, so the retry resumes.
+                // Fail fast so the bounded retry resumes past whatever WAS cleared.
                 throw new DiscoveryIncomplete(`could not read pinned message of channel ${c.id}`, err);
             }
-            // Permanently unreadable (private, forbidden) - genuinely not ours.
+            // Permanently unreadable (private, forbidden). Deliberately NOT cleared:
+            // "we could not check" is not "checked, not ours". Caching it would let a
+            // retry skip the real channel and create a duplicate — the exact
+            // error-vs-no-match conflation this file exists to prevent, re-entering
+            // through the cache.
+            log(`WARNING: channel ${c.id} "${c.title}" is unreadable — cannot rule it out`);
+            unchecked.push(c.id);
+            continue;
+        }
+
+        if (marker) {
+            matches.push({ ...c, marker });
+        } else {
+            // The ONLY definite negative: the read succeeded and there was no marker.
             clearedChannels.add(c.id);
         }
     }
@@ -292,7 +313,12 @@ async function attemptResolve(
         return { id: chosen.id, title: chosen.title, marker: chosen.marker, origin: 'adopted-via-marker' };
     }
 
-    // 3. Create - reached only after a COMPLETE scan found nothing.
+    // 3. Create - reached only after a COMPLETE scan definitively found nothing.
+    if (unchecked.length > 0) {
+        throw new DiscoveryIncomplete(
+            `${unchecked.length} candidate channel(s) could not be checked (${unchecked.join(', ')})`
+        );
+    }
     log(`no marked channel among ${candidates.length} candidate(s) - creating one`);
     const { marker, text } = buildMarker();
     const created = await tg.createChannel({
