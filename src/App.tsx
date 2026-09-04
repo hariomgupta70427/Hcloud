@@ -25,6 +25,7 @@ import SharedFilePage from "./pages/public/SharedFilePage";
 
 // Pulled out of the main bundle: this page (and only this page) loads mtcute.
 const AccountLabPage = lazy(() => import("./pages/lab/AccountLabPage"));
+const StorageLabPage = lazy(() => import("./pages/lab/StorageLabPage"));
 
 import NotFound from "./pages/NotFound";
 
@@ -192,6 +193,14 @@ const App = () => (
                     on the deployed domain under the production CSP.
                     Lazy-loaded on purpose: mtcute is ~1.2MB and must not be in the
                     bundle every visitor downloads to reach the login page. */}
+                <Route
+                  path="/lab/storage"
+                  element={
+                    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Loading storage lab…</div>}>
+                      <StorageLabPage />
+                    </Suspense>
+                  }
+                />
                 <Route
                   path="/lab/account"
                   element={
