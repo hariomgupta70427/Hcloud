@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -21,6 +22,10 @@ import TrashPage from "./pages/dashboard/TrashPage";
 import SettingsPage from "./pages/dashboard/SettingsPage";
 import ProfilePage from "./pages/dashboard/ProfilePage";
 import SharedFilePage from "./pages/public/SharedFilePage";
+
+// Pulled out of the main bundle: this page (and only this page) loads mtcute.
+const AccountLabPage = lazy(() => import("./pages/lab/AccountLabPage"));
+
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -183,6 +188,18 @@ const App = () => (
 
                 {/* Public Shared File Route */}
                 <Route path="/s/:id" element={<SharedFilePage />} />
+                {/* Task 2.0 gate. Unlisted, no auth: it proves browser MTProto works
+                    on the deployed domain under the production CSP.
+                    Lazy-loaded on purpose: mtcute is ~1.2MB and must not be in the
+                    bundle every visitor downloads to reach the login page. */}
+                <Route
+                  path="/lab/account"
+                  element={
+                    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Loading account lab…</div>}>
+                      <AccountLabPage />
+                    </Suspense>
+                  }
+                />
 
                 {/* Dashboard routes — require a live session */}
                 <Route

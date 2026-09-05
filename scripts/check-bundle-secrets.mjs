@@ -74,6 +74,25 @@ const CLIENT_FORBIDDEN = [
  */
 const CLIENT_EXPECTED_STAGE2 = ['TELEGRAM_API_ID', 'TELEGRAM_API_HASH'];
 
+/**
+ * Node shims that must NOT be bundled for the browser.
+ *
+ * These are fingerprints of the shim IMPLEMENTATION, not of feature detection.
+ * `typeof Buffer < "u"` guards are expected and fine — libraries use them to pick
+ * a browser path, and with no Buffer present they pick correctly.
+ *
+ * Why this is enforced: injecting a fake `Buffer` global broke QR login.
+ * @fuman/utils (used by mtcute) does
+ *     if (typeof Buffer !== 'undefined') return Buffer.from(b).toString('base64url')
+ * and the browser `buffer` package does not implement base64url, so it threw
+ * `TypeError: Unknown encoding: base64url`. Removing the shim FIXED the feature.
+ * An incomplete polyfill is worse than none, because feature detection then lies.
+ */
+const NODE_SHIM_PATTERNS = [
+    { name: 'buffer package shim', re: /Unknown encoding: |INSPECT_MAX_BYTES|_isBuffer/g },
+    { name: 'Buffer global assignment', re: /(?:window|globalThis|self)\.Buffer\s*=/g },
+];
+
 /** Shape patterns, to catch a hardcoded literal with no backing env var. */
 const PATTERNS = [
     { name: 'Telegram bot token', re: /\b\d{8,12}:[A-Za-z0-9_-]{30,45}\b/g },
@@ -150,7 +169,19 @@ for (const file of files) {
         }
     }
 
-    // 4. Shape match, for literals with no env var behind them.
+    // 4. Node shims. A re-added Buffer polyfill must fail the build.
+    for (const { name, re } of NODE_SHIM_PATTERNS) {
+        const matches = content.match(re);
+        if (matches) {
+            findings.push({
+                what: `${name} is bundled for the browser (matched "${String(matches[0]).slice(0, 24)}")`,
+                where: rel,
+                fix: 'remove the Node polyfill — see the note in vite.config.ts; an incomplete Buffer breaks feature detection',
+            });
+        }
+    }
+
+    // 5. Shape match, for literals with no env var behind them.
     for (const { name, re } of PATTERNS) {
         const matches = content.match(re);
         if (matches) {
